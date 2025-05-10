@@ -92,7 +92,7 @@ def laplacianA3D(shape, boundaryIndices):
 
 
     """
-    print("Building data for Laplacian Sparse Matrix A")
+    #print("Building data for Laplacian Sparse Matrix A")
 
     # Calculate the voxel index of (x-1,y,z) for each (x,y,z)
     cids_x1  = (X-1)* shape[1]*shape[2] + Y*shape[2]+ Z
@@ -143,7 +143,7 @@ def laplacianA3D(shape, boundaryIndices):
     rowy = np.hstack([ids_0, cids_x1, cids_x2,cids_y1,cids_y2, cids_z1, cids_z2])
     rowv = np.hstack([data , -1*np.ones(rowx.shape[0] - ids_0.shape[0]) ] )
 
-    print("Creating Laplacian Sparse Matrix A")
+    #print("Creating Laplacian Sparse Matrix A")
     A = scipy.sparse.csr_matrix((rowv,(rowx,rowy)), shape =(X.shape[0],X.shape[0]))
     del rowx, rowy, rowv, X, Y, Z, data
     gc.collect()
@@ -158,7 +158,7 @@ def compute3DLaplacianFromShape(shape, mpoints, fpoints):
     
     # shape is depth, rows, columns - z,y,x
     (nz, ny, nx)  = (shape[0], shape[1], shape[2])
-    print(f'nz ny nx {nz} {ny} {nx}')
+    # print(f'nz ny nx {nz} {ny} {nx}')
     # number of dimensions of the displacement vectoe
     nd  = len(shape)
     #print("fdata.shape", fdata.shape)

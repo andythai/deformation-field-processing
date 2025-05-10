@@ -7,7 +7,7 @@ def sitk_jacobian_determinant(deformation: np.ndarray, transpose_displacements=T
     deformation - 3, X, Y, Z, 3
     '''
     deformation = np.transpose(deformation, [1,2,3,0])
-    print("SITK deformation shape:", deformation.shape)
+    #print("SITK deformation shape:", deformation.shape)
     if transpose_displacements:
         deformation = deformation[:, :, :, [2,1,0]]
     #print(deformation[350, 200, 200, :])
