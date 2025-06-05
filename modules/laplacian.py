@@ -209,7 +209,7 @@ def compute3DLaplacianFromShape(shape, mpoints, fpoints):
     
     return phi_xy, A_, b_
 
-def sliceToSlice3DLaplacian(fixedImage, mpoints, fpoints):
+# def sliceToSlice3DLaplacian(fixedImage, mpoints, fpoints):
     """
     Assumes both the images are matched slice to slice according to sliceMatchList along axis- 'axis'
     Gets 2D correspondences between the slices and interpolates them smoothly across the volume
@@ -271,6 +271,62 @@ def sliceToSlice3DLaplacian(fixedImage, mpoints, fpoints):
     
     return deformationField, A, Zd, Yd, Xd
 
+def sliceToSlice3DLaplacian(fixedImage, mpoints, fpoints):
+    """
+    Assumes both the images are matched slice to slice according to sliceMatchList along axis- 'axis'
+    Gets 2D correspondences between the slices and interpolates them smoothly across the volume
+    """
+    fdata = loadNiiImages([fixedImage])
+    
+    nx, ny, nz  = fdata.shape
+    nd  = len(fdata.shape)
+    #print("fdata.shape", fdata.shape)
+    
+    deformationField = np.zeros((nd, nx, ny, nz))
+    
+    flen  = nx*ny*nz
+    Xcount = np.zeros(flen)
+    Ycount = np.zeros(flen)
+    Zcount = np.zeros(flen)
+
+    Xd =  np.zeros(flen)
+    Yd =  np.zeros(flen)
+    Zd =  np.zeros(flen)
+
+    fIndices = fpoints[:,0] * ny*nz + fpoints[:,1] * nz + fpoints[:,2]
+    fIndices = fIndices.astype(int)
+    
+    Xcount[fIndices] +=1 # Added (AT)
+    Ycount[fIndices] +=1
+    Zcount[fIndices] +=1
+    Xd[fIndices] += mpoints[:,0] - fpoints[:,0]  # Added (AT)
+    Yd[fIndices] += mpoints[:,1] - fpoints[:,1]
+    Zd[fIndices] += mpoints[:,2] - fpoints[:,2]
+    
+    start = time.time()
+    A = laplacianA3D(fdata.shape, Ycount.nonzero()[0])
+    #print("Saving to npy")
+    #np.save("Laplacian_A.npy", A.toarray())
+    #np.save("Yd.npy", Yd)
+    #np.save("Zd.npy", Zd)
+    #print("Computing dz")
+    dx = lgmres(A, Xd, tol = 1e-2)[0]
+    #print("dz calculated in {}s".format(time.time() - start))
+    
+    #print("Computing dy")
+    dy = lgmres(A, Yd , tol = 1e-2)[0]
+    #print("dy calculated in {}s".format(time.time() - start))
+
+    #print("Computing dx")
+    dz = lgmres(A, Zd, tol = 1e-2)[0]
+    #print("dx calculated in {}s".format(time.time() - start))
+
+    deformationField[0] = np.zeros(fdata.shape)
+    #deformationField[0] = dx.reshape(fdata.shape)
+    deformationField[1] = dy.reshape(fdata.shape)
+    deformationField[2] = dz.reshape(fdata.shape)
+    
+    return deformationField, A, Xd, Yd, Zd
 
 def createA(fixedImage, mpoints, fpoints):
     """
