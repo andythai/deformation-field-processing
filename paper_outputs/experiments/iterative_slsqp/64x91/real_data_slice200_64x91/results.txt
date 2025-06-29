@@ -1,0 +1,17 @@
+Settings:
+	Method: SLSQP
+	Threshold: 0.01
+	Error tolerance: 1e-05
+	Max iterations: 10000
+	Max per index iterations: 50
+	Max minimize iterations: 1000
+	Starting window size: 9
+
+Results:
+	Input deformation field resolution (height x width): 64 x 91
+	Total run-time: 11.678107738494873 seconds
+	Final L2 error: 0.25015708060960723
+	Starting number of non-positive Jacobian determinants: 3
+	Final number of non-positive Jacobian determinants: 0
+	Final Jacobian determinant minimum value: 8.434078691733049e-05
+	Number of index iterations: 2
