@@ -9,9 +9,10 @@ Settings:
 
 Results:
 	Input deformation field resolution (height x width): 320 x 456
-	Total run-time: 1402.9120464324951 seconds
-	Final L2 error: 7.501808097116615
-	Starting number of non-positive Jacobian determinants: 3
+	Total run-time: 764.2317979335785 seconds
+	Final L2 error: 7.5018146540994
+	Starting number of non-positive Jacobian determinants: 156
 	Final number of non-positive Jacobian determinants: 0
-	Final Jacobian determinant minimum value: 0.003134758862475308
-	Number of index iterations: 80
+	Starting Jacobian determinant minimum value: -2.87547246009617
+	Final Jacobian determinant minimum value: 0.009999342769261482
+	Number of index iterations: 81
