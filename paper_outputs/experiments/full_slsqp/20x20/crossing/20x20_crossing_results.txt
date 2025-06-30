@@ -4,7 +4,7 @@ Settings:
 	Max iterations: 1000000
 Results:
 	Input deformation field resolution (height x width): 20 x 20
-	Total run-time: 188.0555121898651 seconds
+	Total run-time: 163.57523798942566 seconds
 	Final L2 error: 6.11250832999817
 	Starting number of non-positive Jacobian determinants: 28
 	Final number of non-positive Jacobian determinants: 0
