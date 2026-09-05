@@ -663,8 +663,10 @@ git commit -m "3D windowed, phase 1: 3D axial edge rows (any-free-endpoint predi
 Append to `tests/test_windowed_3d.py`:
 
 ```python
-def _planted_3d(shape=(10, 24, 24), seed=0, amp=1.4, size=(4, 6, 6)):
-    """Identity field with one random blob of folds in the interior."""
+def _planted_3d(shape=(8, 40, 20), seed=0, amp=0.5, size=(4, 6, 6)):
+    """Identity field with one random blob of folds in the interior (default: a mild
+    blob whose free box, y 13..26 after margin 3 + ring 1, stays above y = 5 even after
+    two grow-on-failure steps of 4 — so y < 5 is outside every window)."""
     rng = np.random.default_rng(seed)
     phi = np.zeros((3, *shape))
     z, y, x = (s // 2 for s in shape)
@@ -687,12 +689,25 @@ def test_3d_planted_folds_no_damage_and_untouched_voxels_bit_identical(objective
     assert rep.damage == 0 and np.isfinite(out).all()
     assert rep.folds_after < rep.folds_before
     assert rep.n_windows >= 1 and len(rep.windows[0].patch_box) == 6
-    # the blob's window (free box = blob +- margin 3, ring 1) never reaches y < 5
+    # y < 5 is outside every window (see _planted_3d), so those voxels are bit-identical
     assert np.array_equal(out[:, :, :5], phi[:, :, :5])
     # 3D certificate fields are filled; the 2D ones stay at their defaults
     assert rep.best_diag_floor_after >= 0 and rep.best_diag_floor_after_zero >= 0
     assert rep.folds_after_zero >= 0 and rep.best_diag_floor_after <= rep.folds_after
     assert rep.coarse_folds_before == -1 and rep.mop_windows == 0 and rep.reseed_rounds_run == 0
+
+
+@needs_osqp
+def test_3d_hard_blob_no_damage_under_a_short_budget():
+    phi = _planted_3d(amp=1.4)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    assert (min_field(c, phi) < THR).any(), "fixture must contain folds"
+    out, rep = windowed_correct(
+        phi.copy(), "isqp", constraint=c, objective=NoneObjective(), threshold=THR,
+        verbose=0, maxiter=40, fallback_maxiter=40,
+    )
+    assert rep.damage == 0 and np.isfinite(out).all()
+    assert np.array_equal(out[:, :, :5], phi[:, :, :5])
 
 
 @needs_osqp
@@ -1011,12 +1026,12 @@ In `tests/test_windowed_strategy.py` replace `test_rejects_6tet_constraint_at_co
 
 ```python
 def test_accepts_simplex3d_constraint_at_construction():
-    s = Solver(
+    Solver(  # must not raise
         constraint=SimplexConstraint3D(shape=(4, 6, 6)),
         objective=L2Objective(),
         strategy=ISQPWindowedStrategy(),
     )
-    assert s.strategy.supports_3d is True
+    assert ISQPWindowedStrategy.supports_3d is True
 
 
 def test_rejects_jdet3d_constraint_at_construction():
