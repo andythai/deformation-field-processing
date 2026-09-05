@@ -315,8 +315,32 @@ def _orientation_rows(c, free_mask, delta, kind='full'):
     return a, np.asarray(rhs)
 
 
+def _box_slices(box):
+    """``(a0, a1, b0, b1, ...)`` -> ``(slice(a0, a1), slice(b0, b1), ...)`` — one
+    slice per axis, so ``arr[(slice(None), *_box_slices(box))]`` crops a
+    ``(C, *shape)`` field to the box in any dimension."""
+    return tuple(slice(int(box[i]), int(box[i + 1])) for i in range(0, len(box), 2))
+
+
+def _box_size(box):
+    """Grid points inside ``box`` (area in 2D, volume in 3D)."""
+    n = 1
+    for i in range(0, len(box), 2):
+        n *= max(0, int(box[i + 1]) - int(box[i]))
+    return n
+
+
+def _pad_box(box, shape, pad):
+    """Grow every side of ``box`` by ``pad`` grid points, clipped to ``shape``."""
+    out = []
+    for ax, n in enumerate(shape):
+        out.append(max(0, int(box[2 * ax]) - pad))
+        out.append(min(int(n), int(box[2 * ax + 1]) + pad))
+    return tuple(out)
+
+
 def find_windows(mask, margin, ring):
-    """Free boxes ``(fy0, fy1, fx0, fx1)`` around fold clusters.
+    """Free boxes around fold clusters, per-axis ``(lo, hi)`` pairs in axis order.
 
     Dilating the fold mask by ``margin+ring`` before labelling merges clusters whose
     (free box + ring) regions could touch, so a window's free set does not fall in
@@ -328,18 +352,19 @@ def find_windows(mask, margin, ring):
     The dilated bbox is inset by ``ring`` to recover the ``cluster + margin`` free
     box — but NOT on a side that reached the image border, where the fold sits on
     the border line and must stay free (mirrors the Schwarz tiler's border guard).
+
+    Works in any dimension: boxes are per-axis ``(lo, hi)`` pairs in axis order.
     """
     grow = margin + ring
     dil = ndimage.binary_dilation(mask, iterations=grow)
     lbl, n = ndimage.label(dil)
     boxes = []
-    H, W = mask.shape
-    for sy, sx in ndimage.find_objects(lbl):
-        fy0 = sy.start + ring if sy.start > 0 else 0  # keep image-border folds free
-        fy1 = sy.stop - ring if sy.stop < H else H
-        fx0 = sx.start + ring if sx.start > 0 else 0
-        fx1 = sx.stop - ring if sx.stop < W else W
-        boxes.append((fy0, fy1, fx0, fx1))
+    for sl in ndimage.find_objects(lbl):
+        box = []
+        for s, n_ax in zip(sl, mask.shape):
+            box.append(s.start + ring if s.start > 0 else 0)  # keep image-border folds free
+            box.append(s.stop - ring if s.stop < n_ax else n_ax)
+        boxes.append(tuple(box))
     return boxes
 
 
