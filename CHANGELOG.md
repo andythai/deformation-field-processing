@@ -6,6 +6,48 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — 3D windowed engine, phase 1: family plumbing + certificate (`SimplexConstraint3D` in `ISQPWindowedStrategy`)
+
+- `windowed_correct` / `ISQPWindowedStrategy` accept `SimplexConstraint3D` on
+  `(3, D, H, W)` fields: `LOCALITY[SimplexConstraint3D]` (ring 1, `six_tet_min_volume_3d`
+  fold map, eight-corner influenced rule, shape-cached native tet Jacobian), n-D boxes
+  through three helpers (`_box_slices` / `_box_size` / `_pad_box`, byte-identical in 2D —
+  verified main-vs-branch by `benchmarks/windowed_2d_identity.py`: 21 cases, every field
+  `array_equal`, every report identical), 3D axial edge rows (every edge with at least one
+  free endpoint, all three axes, DX_FIRST; the 3D injectivity helper's both-endpoints-free
+  filter is the wrong predicate for a frozen-ring window), the `'tr'` step rule
+  (`'exact_ls'` degrades on 3D), and the certificate fields `folds_after_zero` /
+  `best_diag_floor_after` / `best_diag_floor_after_zero`. Not yet ported (phase 2): the
+  coarse warm start, mop and re-seed are skipped on 3D, the giant cap is advisory
+  (over-cap regions are solved whole), `reanchor` / `polish` raise.
+- Measured (`benchmarks/windowed_3d_gate.py`, `'tr'`, threshold 0.01):
+
+  | case | cfg | folds_in | folds_out | folds_out_zero | floor_in | floor_out | floor_out_zero | min_out | damage | n_windows | sqp_iters | exits | wall_s | l2_move | max_abs_dz |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+  | slice090 | l2_norows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 16 | 'ftol': 1 | 5.91 | 6.66 | 0.358 |
+  | slice090 | l2_rows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 18 | 'ftol': 1 | 7.84 | 7.28 | 0.358 |
+  | slice090 | none_norows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 7 | 'step-tol': 1 | 2.41 | 8.93 | 0.822 |
+  | slice090 | none_rows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 7 | 'ftol': 1 | 3.04 | 9.31 | 0.726 |
+  | slice200 | l2_norows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0110 | 0 | 1 | 32 | 'ftol': 1 | 8.01 | 4.88 | 0.744 |
+  | slice200 | l2_rows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0110 | 0 | 1 | 13 | 'ftol': 1 | 3.83 | 6.97 | 0.625 |
+  | slice200 | none_norows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0112 | 0 | 1 | 8 | 'step-tol': 1 | 2.61 | 7.00 | 0.998 |
+  | slice200 | none_rows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0110 | 0 | 1 | 6 | 'ftol': 1 | 1.99 | 7.72 | 0.773 |
+  | slice350 | l2_norows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0110 | 0 | 1 | 232 | 'tr-collapse': 1, 'maxiter': 1 | 12.8 | 9.71 | 0.692 |
+  | slice350 | l2_rows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0109 | 0 | 1 | 17 | 'ftol': 1 | 7.73 | 11.5 | 0.547 |
+  | slice350 | none_norows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0111 | 0 | 1 | 19 | 'model-flat': 1 | 5.37 | 17.6 | 1.34 |
+  | slice350 | none_rows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0110 | 0 | 1 | 8 | 'step-tol': 1 | 3.00 | 14.6 | 0.851 |
+  <!-- 16^3 sub-volume rows and the L = 33 cost row: appended by the orchestrator when the measurement chain ends -->
+
+- Per-SQP-iteration cost vs window volume (one frozen-ring window, 8 SQP iterations,
+  hybrid backend):
+
+  | L | n_free | n_rows | qp_vars | nnz_jac | jac_s | cons_s | sqp_iters | s_per_sqp_iter | exit | qp_s_median | admm_median |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | 9 | 1029 | 4248 | 5277 | 39216 | 0.00109 | 0.000218 | 8 | 0.289 | maxiter | 0.0944 | 338 |
+  | 17 | 10125 | 35376 | 45501 | 316512 | 0.00686 | 0.000683 | 8 | 11.1 | maxiter | 9.45 | 510 |
+  | 25 | 36501 | 121032 | 157533 | 1071504 | 0.0225 | 0.00211 | 8 | 68.6 | maxiter | 46.8 | 488 |
+  <!-- 16^3 sub-volume rows and the L = 33 cost row: appended by the orchestrator when the measurement chain ends -->
+
 ### Measured — 2.5D `orientation_delta=0.01` on the full 528-slice B0039 volume (sweep stage)
 
 - base → rows: folds 66 → 50, true fold floor (negative under every main

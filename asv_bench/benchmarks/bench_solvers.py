@@ -116,3 +116,46 @@ class WindowedEngine:
 
     track_sqp_iters_l2.unit = "iterations"
     track_l2_move.unit = "L2"
+
+
+class WindowedEngine3D:
+    """Phase 1 of the 3D windowed port (SimplexConstraint3D, 'tr' step rule, 3D edge
+    rows) on a planted 3D fold blob: wall, SQP iterations, L2 move and folds left."""
+
+    timeout = 600
+
+    def setup(self):
+        from dvfopt.constraints import SimplexConstraint3D
+
+        rng = np.random.default_rng(0)
+        self.phi = np.zeros((3, 10, 16, 16))
+        self.phi[:, 3:7, 5:11, 5:11] = rng.normal(0, 0.8, (3, 4, 6, 6))
+        self.constraint = SimplexConstraint3D(shape=self.phi.shape[1:])
+
+    def _run(self):
+        from dvfopt.core.windowed import windowed_correct
+        from dvfopt.objectives import NoneObjective
+
+        out, rep = windowed_correct(
+            self.phi.copy(), "isqp", constraint=self.constraint, objective=NoneObjective(),
+            threshold=0.01, verbose=0,
+        )
+        assert rep.damage == 0
+        return out, rep
+
+    def time_window_3d(self):
+        self._run()
+
+    def track_sqp_iters_3d(self):
+        return float(sum(w.inner_iters for w in self._run()[1].windows))
+
+    def track_l2_move_3d(self):
+        out, _rep = self._run()
+        return float(np.linalg.norm((out - self.phi).ravel()))
+
+    def track_folds_after_3d(self):
+        return float(self._run()[1].folds_after)
+
+    track_sqp_iters_3d.unit = "iterations"
+    track_l2_move_3d.unit = "L2"
+    track_folds_after_3d.unit = "folds"
