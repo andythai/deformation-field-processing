@@ -516,13 +516,14 @@ def test_rows_3d_keep_free_to_frozen_edges_and_drop_frozen_frozen():
 def test_rows_3d_rotated_cube_violates_and_compressed_cube_does_not():
     from dvfopt.core.windowed._common import _orientation_rows_3d
 
-    c = SimplexConstraint3D(shape=(2, 2, 2))
-    a, b = _orientation_rows_3d(c, np.ones((2, 2, 2), bool), 0.01)
-    phi = np.zeros((3, 2, 2, 2))
-    phi[2, :, :, 0], phi[2, :, :, 1] = 1.0, -1.0  # x-edges flipped: deformed x goes 1 -> 0
+    c = SimplexConstraint3D(shape=(3, 3, 3))  # validate_dvf's minimum spatial size is 3
+    a, b = _orientation_rows_3d(c, np.ones((3, 3, 3), bool), 0.01)
+    phi = np.zeros((3, 3, 3, 3))
+    phi[2, :, :, 0], phi[2, :, :, 1] = 1.0, -1.0  # the x-edge 0 -> 1 flips: deformed x goes 1 -> 0
     assert (a @ np.asarray(c.flatten(phi)) + b).min() < 0
-    phi = np.zeros((3, 2, 2, 2))
-    phi[2, :, :, 1] = phi[1, :, 1, :] = phi[0, 1] = -0.5  # 50 % compression on every axis
+    phi = np.zeros((3, 3, 3, 3))
+    for j in range(3):  # 50 % compression on every axis: every edge projection is +0.5
+        phi[2, :, :, j] = phi[1, :, j, :] = phi[0, j] = -0.5 * j
     assert (a @ np.asarray(c.flatten(phi)) + b).min() > 0
 
 
