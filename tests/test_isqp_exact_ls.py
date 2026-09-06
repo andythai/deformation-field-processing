@@ -103,12 +103,26 @@ def test_unknown_step_rule_raises():
         _solve(np.zeros((2, 8, 8)), step_rule="nope")
 
 
-def test_exact_ls_is_rejected_on_a_3d_field():
+def test_exact_ls_degrades_to_tr_on_a_3d_field_and_still_refuses_other_ranks():
     """A 6-tet volume row is trilinear, hence CUBIC along a line — the quadratic
-    model does not transfer, so the engine refuses at its entry."""
+    model does not transfer. Since the 3D port (phase 1) the engine degrades to
+    ``'tr'`` on a ``(3, D, H, W)`` field instead of refusing it (the degrade is
+    pinned in ``test_windowed_3d.py``); every other rank still raises at entry."""
+    from dvfopt.constraints import SimplexConstraint3D
+
+    phi = np.zeros((3, 4, 8, 8))
+    phi[2] = 0.1  # fold-free: the entry gate is what is under test, not the solve
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=SimplexConstraint3D(shape=(4, 8, 8)),
+        objective=NoneObjective(),
+        threshold=THR,
+    )
+    assert np.array_equal(out, phi) and rep.n_windows == 0
     with pytest.raises(ValueError, match="2D"):
         windowed_correct(
-            np.zeros((3, 4, 8, 8)),
+            np.zeros((2, 8)),
             "isqp",
             constraint=SimplexConstraint2D(shape=(8, 8)),
             objective=NoneObjective(),

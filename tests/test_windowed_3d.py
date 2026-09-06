@@ -206,3 +206,134 @@ def test_subproblem_3d_rejects_the_full_rows_kind():
             orientation_delta=0.01,
             orientation_rows='full',
         )
+
+
+def _planted_3d(shape=(8, 40, 20), seed=0, amp=0.5, size=(4, 6, 6)):
+    """Identity field with one random blob of folds in the interior (default: a mild
+    blob whose free box, y 13..26 after margin 3 + ring 1, stays above y = 5 even after
+    two grow-on-failure steps of 4 — so y < 5 is outside every window)."""
+    rng = np.random.default_rng(seed)
+    phi = np.zeros((3, *shape))
+    z, y, x = (s // 2 for s in shape)
+    dz, dy, dx = size
+    phi[:, z - dz // 2 : z + dz // 2, y - dy // 2 : y + dy // 2, x - dx // 2 : x + dx // 2] = (
+        rng.normal(0, amp, (3, *size))
+    )
+    return phi
+
+
+@needs_osqp
+@pytest.mark.parametrize("objective", [NoneObjective, L2Objective])
+def test_3d_planted_folds_no_damage_and_untouched_voxels_bit_identical(objective):
+    phi = _planted_3d()
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    assert (min_field(c, phi) < THR).any(), "fixture must contain folds"
+    out, rep = windowed_correct(
+        phi.copy(), "isqp", constraint=c, objective=objective(), threshold=THR, verbose=0
+    )
+    assert rep.damage == 0 and np.isfinite(out).all()
+    assert rep.folds_after < rep.folds_before
+    assert rep.n_windows >= 1 and len(rep.windows[0].patch_box) == 6
+    # y < 5 is outside every window (see _planted_3d), so those voxels are bit-identical
+    assert np.array_equal(out[:, :, :5], phi[:, :, :5])
+    # 3D certificate fields are filled; the 2D ones stay at their defaults
+    assert rep.best_diag_floor_after >= 0 and rep.best_diag_floor_after_zero >= 0
+    assert rep.folds_after_zero >= 0 and rep.best_diag_floor_after <= rep.folds_after
+    assert rep.coarse_folds_before == -1 and rep.mop_windows == 0 and rep.reseed_rounds_run == 0
+
+
+@needs_osqp
+def test_3d_hard_blob_no_damage_under_a_short_budget():
+    phi = _planted_3d(amp=1.4)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    assert (min_field(c, phi) < THR).any(), "fixture must contain folds"
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        maxiter=40,
+        fallback_maxiter=40,
+    )
+    assert rep.damage == 0 and np.isfinite(out).all()
+    assert np.array_equal(out[:, :, :5], phi[:, :, :5])
+
+
+@needs_osqp
+def test_3d_mild_blob_reaches_zero_folds_on_tr():
+    phi = _planted_3d(amp=0.5)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    assert (min_field(c, phi) < THR).any(), "fixture must contain folds"
+    out, rep = windowed_correct(
+        phi.copy(), "isqp", constraint=c, objective=NoneObjective(), threshold=THR, verbose=0
+    )
+    assert rep.folds_after == 0 and rep.damage == 0
+    assert (min_field(c, out) >= THR).all()
+    assert rep.folds_after_zero == 0 and rep.best_diag_floor_after == 0
+
+
+@needs_osqp
+def test_3d_fold_free_input_is_returned_byte_identical():
+    phi = np.zeros((3, 6, 8, 8))
+    phi[2] = 0.1
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    out, rep = windowed_correct(phi.copy(), "isqp", constraint=c, threshold=THR, verbose=0)
+    assert np.array_equal(out, phi) and rep.n_windows == 0 and rep.damage == 0
+    assert rep.folds_after_zero == 0 and rep.best_diag_floor_after == 0
+
+
+@needs_osqp
+def test_3d_exact_ls_default_degrades_to_tr(monkeypatch):
+    import dvfopt.core.windowed._common as cm
+
+    seen = []
+    orig = cm.solve_window_inner
+
+    def spy(sub, inner, maxiter, **kw):
+        seen.append(kw.get("step_rule"))
+        return orig(sub, inner, maxiter, **kw)
+
+    monkeypatch.setattr(cm, "solve_window_inner", spy)
+    phi = _planted_3d((6, 10, 10), amp=1.0)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    windowed_correct(phi, "isqp", constraint=c, threshold=THR, verbose=0, maxiter=3)  # 'exact_ls'
+    assert seen and set(seen) == {"tr"}
+
+
+def test_3d_refuses_the_unported_stages():
+    phi = np.zeros((3, 6, 8, 8))
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    with pytest.raises(ValueError, match="3D"):
+        windowed_correct(phi, "isqp", constraint=c, threshold=THR, reanchor="l2")
+    with pytest.raises(ValueError, match="3D"):
+        windowed_correct(phi, "isqp", constraint=c, threshold=THR, polish="l2")
+
+
+@needs_osqp
+def test_3d_over_cap_region_is_solved_whole_and_counted():
+    phi = _planted_3d(amp=0.5)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        max_window_area=100,
+    )
+    assert rep.giant_regions >= 1 and rep.damage == 0
+    assert rep.folds_after == 0  # the cap is advisory in phase 1: the region was solved whole
+
+
+def test_2d_report_keeps_the_3d_fields_at_minus_one():
+    from dvfopt.core.windowed import SliceReport
+
+    rep = SliceReport()
+    assert (rep.folds_after_zero, rep.best_diag_floor_after, rep.best_diag_floor_after_zero) == (
+        -1,
+        -1,
+        -1,
+    )
