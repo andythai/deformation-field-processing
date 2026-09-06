@@ -50,7 +50,6 @@ tiles with damage accounting — and deliberately does NOT reuse
 ``core/schwarz/_common.py``, whose crop-Strategy contract cannot freeze rings.
 """
 
-import logging
 import math
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -59,7 +58,7 @@ import numpy as np
 from scipy import ndimage, sparse
 from scipy.sparse.linalg import spsolve
 
-from dvfopt._logging import log_warning
+from dvfopt._logging import log_warning, logger
 from dvfopt.objectives import L2Objective, _kind_eps, make_objective
 
 from ._inners import _ISQP_LABELS, WindowSub, solve_window_inner
@@ -215,7 +214,7 @@ def build_subproblem(
     flat0 = np.asarray(c.flatten(patch), dtype=np.float64)
 
     # free pixels (patch-local): the free box, clipped into the patch
-    local = tuple(int(free_box[i]) - int(patch_box[i - i % 2]) for i in range(len(free_box)))
+    local = tuple(int(free_box[i]) - int(patch_box[2 * (i // 2)]) for i in range(len(free_box)))
     free_mask = np.zeros(pshape, bool)
     free_mask[_box_slices(local)] = True
     if free_extra is not None:
@@ -859,13 +858,13 @@ def windowed_correct(
         raise ValueError(f"unknown step_rule {step_rule!r}; valid: 'tr', 'exact_ls'")
     if reanchor not in _REANCHOR_KINDS:
         raise ValueError(f"unknown reanchor {reanchor!r}; valid: {list(_REANCHOR_KINDS)}")
-    is3d = np.asarray(phi_in).ndim == 4
+    is3d = getattr(constraint, 'dim', 2) == 3
     if step_rule == 'exact_ls' and is3d:
         # The exact line model needs rows that are BILINEAR in the displacements — true
         # of every 2D family here, false of a 6-tet volume (trilinear, hence cubic along
         # a line). Degrade to the ratio test — the way orientation_delta is dropped on
         # non-DY_FIRST packs below — until phase 3 of the 3D port ships the cubic model.
-        logging.getLogger('dvfopt').debug(
+        logger.debug(
             "windowed_correct: step_rule='exact_ls' is 2D-only; using 'tr' on this 3D field"
         )
         step_rule = 'tr'
@@ -875,6 +874,8 @@ def windowed_correct(
         raise ValueError(
             'reanchor and polish are not yet supported on 3D fields (3D port, phase 2)'
         )
+    if is3d and orientation_delta is not None and orientation_rows != 'edges':
+        raise ValueError("3D orientation rows: only kind='edges' exists (no convexity rows in 3D)")
     loc = _locality_of(constraint)
     if orientation_delta is not None:
         from dvfopt.constraints import PhiPack
@@ -884,8 +885,9 @@ def windowed_correct(
         )
         if not family_rows:
             # The edge-monotonicity rows are a simplex-family formulation (DY_FIRST in
-            # 2D, the registered 6-tet family in 3D); the Jdet / finite families keep
-            # the plain rows (explicit requests on a sub-problem still raise in
+            # 2D, any dim == 3 constraint — only SimplexConstraint3D reaches this gate
+            # because `_locality_of` runs first); the Jdet / finite families keep the
+            # plain rows (explicit requests on a sub-problem still raise in
             # build_subproblem).
             orientation_delta = None
     opts = _InnerOpts(
@@ -1176,11 +1178,12 @@ def windowed_correct(
     rep.damage_coords = [tuple(int(v) for v in c) for c in np.argwhere(damage_mask)[:20]]
     rep.residual_in_window = int((after_fold & touched).sum())
     if is3d:
-        from dvfopt.jacobian.tetrahedron_sign import n_neg_best_diagonal
+        from dvfopt.jacobian.tetrahedron_sign import best_diagonal_min_volume
 
+        best_min, _ = best_diagonal_min_volume(phi)
         rep.folds_after_zero = int((jf <= 0).sum())
-        rep.best_diag_floor_after = int(n_neg_best_diagonal(phi, threshold))
-        rep.best_diag_floor_after_zero = int(n_neg_best_diagonal(phi, 0.0))
+        rep.best_diag_floor_after = int((best_min <= threshold).sum())
+        rep.best_diag_floor_after_zero = int((best_min <= 0.0).sum())
     rep.n_windows = len(rep.windows)
     rep.time_s = time.perf_counter() - t0
     if record_history:

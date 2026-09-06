@@ -219,7 +219,8 @@ def _influenced_finite(c, free_mask, ph, pw, borders):
     return enforced_idx, jac_of
 
 
-@functools.lru_cache(maxsize=64)  # bounded: a volume's windows recur in a few dozen shapes
+# bounded: entries are ~1.2 KB per cube, so a few large shapes are all that fits
+@functools.lru_cache(maxsize=8)
 def _cached_tet_jac(pd, ph, pw):
     """Native sparse tet-Jacobian builder for one patch shape (72 nnz per cube, one
     vectorised pass per call). Cached per SHAPE here because
@@ -305,7 +306,8 @@ def min_field(constraint, phi_dydx):
 
 
 def pixel_fold_mask(constraint, phi_dydx, threshold):
-    """Boolean ``(H, W)`` pixel mask of folds (constraint value < threshold)."""
+    """Boolean pixel/voxel mask of the field's spatial shape, marking folds
+    (constraint value < threshold)."""
     return min_field(constraint, phi_dydx) < threshold
 
 

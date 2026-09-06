@@ -3,10 +3,10 @@
 ``--gate``  the three ``testcases_3d`` fields + the 16^3 B0039 sub-volume under
             {L2, none} x {edge rows on, off} on the ``'tr'`` step rule: fixed-6-tet
             folds (at threshold and at 0), the best-diagonal floor (both), damage,
-            windows, SQP iterations, per-window exit reasons, wall, L1 / L2 move and
-            the largest |dz| moved. Asserts 0 folds / damage 0 on the testcases under
-            the default config (the plumbing gate) and damage 0 everywhere; the 16^3
-            result is reported with its floor.
+            windows, SQP iterations, the exit reason of every inner call (i.e. every
+            ladder rung), wall, L1 / L2 move and the largest |dz| moved. Asserts 0
+            folds / damage 0 on the testcases under the default config (the plumbing
+            gate) and damage 0 everywhere; the 16^3 result is reported with its floor.
 ``--cost``  per-SQP-iteration cost vs window volume: ONE frozen-ring window over the
             interior of 9^3 / 17^3 / 25^3 / 33^3 cubes, 8 SQP iterations, every QP
             solve timed (wall, ADMM iterations, status) through a proxy around
@@ -197,6 +197,7 @@ def gate_case(name, phi, cfg):
         n_qp=len(QP_LOG),
         qp_s_median=float(np.median(qp)),
         qp_s_max=float(qp.max()),
+        # mixes ADMM and IP (Clarabel cold-solve) iteration counts; the per-QP status string separates them.
         admm_iters_median=float(np.median([i for _w, i, _s in QP_LOG])) if QP_LOG else -1.0,
         wall_s=wall,
         l2_move=float(np.linalg.norm(move.ravel())),

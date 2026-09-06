@@ -140,6 +140,7 @@ class WindowedEngine3D:
             self.phi.copy(), "isqp", constraint=self.constraint, objective=NoneObjective(),
             threshold=0.01, verbose=0,
         )
+        assert rep.folds_before > 0
         assert rep.damage == 0
         return out, rep
 

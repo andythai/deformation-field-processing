@@ -106,7 +106,8 @@ def _scalars(rep):
 def run(out_dir):
     os.makedirs(out_dir, exist_ok=True)
     print(f"dvfopt from {dvfopt.__file__}", flush=True)
-    for name, (phi, fams, objs) in _cases().items():
+    cases = _cases()
+    for name, (phi, fams, objs) in cases.items():
         for fam in fams:
             for obj in objs:
                 key = f"{name}__{fam}__{obj}"
@@ -126,6 +127,7 @@ def run(out_dir):
                     f"windows {rep.n_windows} {rep.time_s:.1f}s",
                     flush=True,
                 )
+    print(f"{len(cases)} cases", flush=True)
 
 
 def compare(a, b):
@@ -155,6 +157,7 @@ def compare(a, b):
             f"  {key}: field {'same' if same_arr else 'DIFFERENT'}, report {'same' if same_rep else 'DIFFERENT'}{note}"
         )
         ok &= same_arr and same_rep and extra_ok
+    print(f"{len(keys_a)} keys")
     print("IDENTITY PASS" if ok else "IDENTITY FAIL")
     return ok
 

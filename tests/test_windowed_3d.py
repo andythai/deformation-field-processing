@@ -234,8 +234,9 @@ def test_3d_planted_folds_no_damage_and_untouched_voxels_bit_identical(objective
     assert rep.damage == 0 and np.isfinite(out).all()
     assert rep.folds_after < rep.folds_before
     assert rep.n_windows >= 1 and len(rep.windows[0].patch_box) == 6
-    # y < 5 is outside every window (see _planted_3d), so those voxels are bit-identical
-    assert np.array_equal(out[:, :, :5], phi[:, :, :5])
+    lo = min(w.patch_box[2] for w in rep.windows)  # lowest y any window's patch reached
+    assert lo >= 1
+    assert np.array_equal(out[:, :, :lo], phi[:, :, :lo])
     # 3D certificate fields are filled; the 2D ones stay at their defaults
     assert rep.best_diag_floor_after >= 0 and rep.best_diag_floor_after_zero >= 0
     assert rep.folds_after_zero >= 0 and rep.best_diag_floor_after <= rep.folds_after
@@ -258,7 +259,9 @@ def test_3d_hard_blob_no_damage_under_a_short_budget():
         fallback_maxiter=40,
     )
     assert rep.damage == 0 and np.isfinite(out).all()
-    assert np.array_equal(out[:, :, :5], phi[:, :, :5])
+    lo = min(w.patch_box[2] for w in rep.windows)  # lowest y any window's patch reached
+    assert lo >= 1
+    assert np.array_equal(out[:, :, :lo], phi[:, :, :lo])
 
 
 @needs_osqp
@@ -309,6 +312,8 @@ def test_3d_refuses_the_unported_stages():
         windowed_correct(phi, "isqp", constraint=c, threshold=THR, reanchor="l2")
     with pytest.raises(ValueError, match="3D"):
         windowed_correct(phi, "isqp", constraint=c, threshold=THR, polish="l2")
+    with pytest.raises(ValueError, match="edges"):
+        windowed_correct(phi, "isqp", constraint=c, threshold=THR, orientation_rows="full")
 
 
 @needs_osqp
