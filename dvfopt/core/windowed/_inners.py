@@ -32,8 +32,8 @@ class WindowSub:
     obj_grad: object
     hess_diag: object
     free_idx: np.ndarray
-    free_mask: np.ndarray  # (ph, pw) which patch pixels are free (for paste-back)
-    patch_box: tuple  # (py0, py1, px0, px1) global coords
+    free_mask: np.ndarray  # patch-shaped bool: which patch pixels/voxels are free (for paste-back)
+    patch_box: tuple  # per-axis (lo, hi) pairs in global coords
     n_enforced: int
 
 

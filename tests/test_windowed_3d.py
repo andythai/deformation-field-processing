@@ -92,3 +92,39 @@ def test_tet3d_patch_jacobian_matches_finite_differences():
         e[k] = eps
         fd = (np.asarray(c.values(f0 + e)) - np.asarray(c.values(f0 - e))) / (2 * eps)
         np.testing.assert_allclose(Jd[:, k], fd, atol=1e-6)
+
+
+def test_build_subproblem_3d_geometry_and_patch_identity():
+    from dvfopt.jacobian.tetrahedron_sign import six_tet_volumes_3d
+
+    rng = np.random.default_rng(2)
+    phi = rng.normal(0, 0.25, (3, 9, 10, 11))
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    box = (2, 5, 3, 7, 4, 8)
+    sub = build_subproblem(c, phi, box, THR, NoneObjective(), 1e-3)
+    assert sub.patch_box == (1, 6, 2, 8, 3, 9)  # ring 1 on every side (interior box)
+    assert sub.free_mask.shape == (5, 6, 6)
+    assert sub.free_mask.sum() == 3 * 4 * 4 and sub.free_mask[1:4, 1:5, 1:5].all()
+    n = sub.free_mask.size
+    assert sub.free_idx.size == 3 * 48  # every free voxel in each of the dx / dy / dz blocks
+    assert set((sub.free_idx // n).tolist()) == {0, 1, 2}
+    # every cube of this patch has a free corner -> all 6 * cells rows are enforced, and
+    # their values at flat0 are the GLOBAL tet volumes (exact cells: no interior-cut mismatch)
+    m = 4 * 5 * 5
+    assert sub.n_enforced == 6 * m
+    vals = (sub.cons(sub.flat0) + (THR + 1e-3)).reshape(6, 4, 5, 5)
+    np.testing.assert_allclose(vals, six_tet_volumes_3d(phi)[:, 1:5, 2:7, 3:8], atol=1e-12)
+    J = sub.cons_jac(sub.flat0)
+    assert J.shape == (sub.n_enforced, sub.flat0.size)
+
+
+def test_build_subproblem_3d_free_extra_and_volume_border():
+    phi = np.zeros((3, 9, 10, 11))
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    fe = np.zeros(phi.shape[1:], bool)
+    fe[3, 5, 6] = True
+    sub = build_subproblem(c, phi, (2, 5, 3, 7, 4, 8), THR, None, 1e-3, free_extra=fe)
+    assert sub.free_idx.size == 3 and sub.n_enforced == 6 * 8  # one voxel: its 8 cubes
+    sub = build_subproblem(c, phi, (0, 3, 3, 7, 4, 8), THR, None, 1e-3)
+    assert sub.patch_box == (0, 4, 2, 8, 3, 9)  # no ring past the z=0 face
+    assert sub.free_mask[0:3, 1:5, 1:5].all() and sub.free_mask.sum() == 3 * 4 * 4

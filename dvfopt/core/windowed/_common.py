@@ -177,7 +177,8 @@ def build_subproblem(
     orientation_delta=None,
     orientation_rows='full',
 ):
-    """Build the window sub-problem for a free box ``(fy0, fy1, fx0, fx1)`` (global).
+    """Build the window sub-problem for a free box of per-axis ``(lo, hi)`` pairs
+    (global; ``(fy0, fy1, fx0, fx1)`` in 2D, ``(fz0, fz1, fy0, fy1, fx0, fx1)`` in 3D).
 
     Expands the free box by the family ring to a patch, instantiates a
     patch-shaped clone of ``constraint``'s type, selects the free pixels and the
@@ -196,35 +197,37 @@ def build_subproblem(
     and they are linear, hence exact in the QP (no thin-cell linearisation error).
     2D, ``PhiPack.DY_FIRST`` families only.
 
-    ``free_extra`` (optional global ``(H, W)`` bool mask) is INTERSECTED with the
-    free box, so a caller can free a subset of it — the re-anchor stage frees only
-    pixels the main solve moved. ``None`` (default) frees the whole box. The patch
-    is still the box expanded by the family ring, so the enforced rows a free pixel
-    influences are all in-patch either way.
+    ``free_extra`` (optional global bool mask of the field's spatial shape) is
+    INTERSECTED with the free box, so a caller can free a subset of it — the
+    re-anchor stage frees only pixels the main solve moved. ``None`` (default)
+    frees the whole box. The patch is still the box expanded by the family ring,
+    so the enforced rows a free pixel influences are all in-patch either way.
     """
-    H, W = phi_dydx.shape[1:]
+    shape = phi_dydx.shape[1:]
     loc = _locality_of(constraint)
     ring = loc.ring
-    fy0, fy1, fx0, fx1 = free_box
-    py0, py1 = max(0, fy0 - ring), min(H, fy1 + ring)
-    px0, px1 = max(0, fx0 - ring), min(W, fx1 + ring)
-    patch = np.ascontiguousarray(phi_dydx[:, py0:py1, px0:px1])
-    ph, pw = patch.shape[1:]
-    c = type(constraint)(shape=(ph, pw))
+    patch_box = _pad_box(free_box, shape, ring)
+    patch = np.ascontiguousarray(phi_dydx[(slice(None), *_box_slices(patch_box))])
+    pshape = patch.shape[1:]
+    c = type(constraint)(shape=pshape)
     flat0 = np.asarray(c.flatten(patch), dtype=np.float64)
 
     # free pixels (patch-local): the free box, clipped into the patch
-    free_mask = np.zeros((ph, pw), bool)
-    free_mask[fy0 - py0 : fy1 - py0, fx0 - px0 : fx1 - px0] = True
+    local = tuple(int(free_box[i]) - int(patch_box[i - i % 2]) for i in range(len(free_box)))
+    free_mask = np.zeros(pshape, bool)
+    free_mask[_box_slices(local)] = True
     if free_extra is not None:
-        free_mask &= free_extra[py0:py1, px0:px1]
+        free_mask &= free_extra[_box_slices(patch_box)]
 
-    enforced_idx, jac_of = loc.influenced(
-        c, free_mask, ph, pw, (py0 == 0, py1 == H, px0 == 0, px1 == W)
+    borders = tuple(
+        b
+        for ax, n in enumerate(shape)
+        for b in (patch_box[2 * ax] == 0, patch_box[2 * ax + 1] == n)
     )
+    enforced_idx, jac_of = loc.influenced(c, free_mask, *pshape, borders)
 
     # free variable indices in the constraint's own pack (never hand-packed)
-    free_phi = np.stack([free_mask, free_mask]).astype(float)
+    free_phi = np.stack([free_mask] * phi_dydx.shape[0]).astype(float)
     free_idx = np.nonzero(np.asarray(c.flatten(free_phi)) > 0.5)[0]
 
     target = threshold + margin_delta
@@ -261,7 +264,7 @@ def build_subproblem(
         hess,
         free_idx,
         free_mask,
-        (py0, py1, px0, px1),
+        patch_box,
         n_rows,
     )
 
