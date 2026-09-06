@@ -1148,6 +1148,9 @@ FAMILIES = {
 }
 OBJECTIVES = {"l2": L2Objective, "none": NoneObjective}
 THR = 0.01
+# SliceReport fields the 3D port ADDED (absent on main, -1 on every 2D run): the only
+# one-sided report keys the compare tolerates.
+NEW_3D_FIELDS = {"folds_after_zero", "best_diag_floor_after", "best_diag_floor_after_zero"}
 
 
 def _cases():
@@ -1220,9 +1223,14 @@ def compare(a, b):
     for key in keys_a:
         same_arr = np.array_equal(np.load(os.path.join(a, f"{key}.npy")), np.load(os.path.join(b, f"{key}.npy")))
         with open(os.path.join(a, f"{key}.json")) as fa, open(os.path.join(b, f"{key}.json")) as fb:
-            same_rep = json.load(fa) == json.load(fb)
-        print(f"  {key}: field {'same' if same_arr else 'DIFFERENT'}, report {'same' if same_rep else 'DIFFERENT'}")
-        ok &= same_arr and same_rep
+            ra, rb = json.load(fa), json.load(fb)
+        same_rep = all(ra[k] == rb[k] for k in set(ra) & set(rb))  # every common key exact
+        # one-sided keys: only the 3D certificate fields, and only at their 2D value -1
+        extra = {k: (ra.get(k), rb.get(k)) for k in set(ra) ^ set(rb)}
+        extra_ok = all(k in NEW_3D_FIELDS and v in ((None, -1), (-1, None)) for k, v in extra.items())
+        note = "" if not extra else f", one-sided keys {sorted(extra)}" + ("" if extra_ok else " UNEXPECTED")
+        print(f"  {key}: field {'same' if same_arr else 'DIFFERENT'}, report {'same' if same_rep else 'DIFFERENT'}{note}")
+        ok &= same_arr and same_rep and extra_ok
     print("IDENTITY PASS" if ok else "IDENTITY FAIL")
     return ok
 
