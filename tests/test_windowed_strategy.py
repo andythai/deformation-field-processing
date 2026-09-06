@@ -100,10 +100,21 @@ def test_rejects_fullcoverage_constraint_at_construction():
         )
 
 
-def test_rejects_6tet_constraint_at_construction():
+def test_accepts_simplex3d_constraint_at_construction():
+    Solver(  # must not raise
+        constraint=SimplexConstraint3D(shape=(4, 6, 6)),
+        objective=L2Objective(),
+        strategy=ISQPWindowedStrategy(),
+    )
+    assert ISQPWindowedStrategy.supports_3d is True
+
+
+def test_rejects_jdet3d_constraint_at_construction():
+    from dvfopt.constraints import JdetConstraint3D
+
     with pytest.raises(IncompatibleConstraintError):
         Solver(
-            constraint=SimplexConstraint3D(shape=(4, 6, 6)),
+            constraint=JdetConstraint3D(shape=(4, 6, 6)),
             objective=L2Objective(),
             strategy=ISQPWindowedStrategy(),
         )

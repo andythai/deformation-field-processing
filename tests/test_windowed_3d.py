@@ -337,3 +337,18 @@ def test_2d_report_keeps_the_3d_fields_at_minus_one():
         -1,
         -1,
     )
+
+
+@needs_osqp
+def test_3d_solver_composition_and_string_recipe():
+    from dvfopt import ISQPWindowedStrategy, Solver, correct_dvf
+
+    phi = _planted_3d((8, 14, 14), amp=0.5)
+    res = Solver(
+        constraint=SimplexConstraint3D(shape=phi.shape[1:]),
+        objective=NoneObjective(),
+        strategy=ISQPWindowedStrategy(),
+    ).fit(phi)
+    assert res.corrected.shape == phi.shape and np.isfinite(res.corrected).all()
+    res2 = correct_dvf(phi, constraint='simplex_3d', strategy='isqp_windowed', objective='none')
+    assert np.array_equal(res2.corrected, res.corrected)  # same deterministic solve

@@ -34,6 +34,14 @@ from dvfopt.strategies.base import Strategy, register_strategy
 class WindowedWrapperStrategy(Strategy):
     """Cluster-windowed no-damage decomposition around an inner window solver.
 
+    Since the 3D port's phase 1 the engine also accepts
+    :class:`~dvfopt.constraints.SimplexConstraint3D` on ``(3, D, H, W)``
+    fields: the round loop + window ladder with the 3D axial edge rows
+    and the ``'tr'`` step rule (``'exact_ls'`` degrades); the coarse
+    warm start, mop and re-seed are skipped, the giant cap is advisory,
+    ``reanchor`` / ``polish`` raise. Jdet3D stays with
+    ``SLSQPWindowedStrategy``.
+
     Detects fold clusters, solves each inside a small window with a
     hard-frozen context ring (only the free pixels are pasted back —
     the rest of the slice is untouched *by construction*), grows
@@ -217,7 +225,7 @@ class WindowedWrapperStrategy(Strategy):
 
     accepts_constraints = tuple(LOCALITY)
     accepts_objectives = (L1Objective, L2Objective, NoneObjective)
-    supports_3d = False
+    supports_3d = True  # SimplexConstraint3D via LOCALITY (3D port, phase 1)
 
     def __post_init__(self):
         if self.inner is None:
