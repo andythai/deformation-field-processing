@@ -195,7 +195,8 @@ def build_subproblem(
     convexity rows) for every edge / cell with a free pixel. A cell on the rotated
     orientation branch violates them, so with the rows the QP never heads there --
     and they are linear, hence exact in the QP (no thin-cell linearisation error).
-    2D, ``PhiPack.DY_FIRST`` families only.
+    2D, ``PhiPack.DY_FIRST`` families only. On a 3D patch the rows are
+    :func:`_orientation_rows_3d` (axial edges on all three axes, ``'edges'`` only).
 
     ``free_extra`` (optional global bool mask of the field's spatial shape) is
     INTERSECTED with the free box, so a caller can free a subset of it — the
@@ -240,9 +241,16 @@ def build_subproblem(
 
     n_rows = enforced_idx.size
     if orientation_delta is not None:
-        a_or, b_or = _orientation_rows(
-            c, free_mask, float(orientation_delta), kind=orientation_rows
-        )
+        if len(pshape) == 3:
+            if orientation_rows != 'edges':
+                raise ValueError(
+                    "3D orientation rows: only kind='edges' exists (no convexity rows in 3D)"
+                )
+            a_or, b_or = _orientation_rows_3d(c, free_mask, float(orientation_delta))
+        else:
+            a_or, b_or = _orientation_rows(
+                c, free_mask, float(orientation_delta), kind=orientation_rows
+            )
         base_cons, base_jac = cons, cons_jac
 
         def cons(f, _a=a_or, _b=b_or):
@@ -316,6 +324,37 @@ def _orientation_rows(c, free_mask, delta, kind='full'):
                     add((i + 1) * pw + j, i * pw + j + 1)
     a = sparse.csr_matrix((vals, (rows, cols)), shape=(r, 2 * n))
     return a, np.asarray(rhs)
+
+
+def _orientation_rows_3d(c, free_mask, delta):
+    """Sparse ``(A, b)`` with ``A @ x + b >= 0`` the axial edge rows of a 3D patch.
+
+    Every grid edge with at least one FREE endpoint keeps a positive projection of at
+    least ``delta`` on its own axis: ``1 + dx[k,i,j+1] - dx[k,i,j] >= delta`` for the
+    x-edges (dx block), likewise y-edges on dy and z-edges on dz — the ``'edges'`` kind
+    of :func:`_orientation_rows` in the ``DX_FIRST`` pack ``[dx | dy | dz]``. The row
+    matrix is the 3D injectivity helper's (``core.slsqp_windowed.constraints3d``) built
+    WITHOUT its freeze filter: that filter keeps only rows whose BOTH endpoints are
+    free, but the free-to-frozen-ring edges are exactly the rows that stop a free voxel
+    rotating against its pinned neighbour, so here a row is kept when it touches ANY
+    free column (the ``core.marching._mono_rows.mono_block`` predicate). Frozen-frozen
+    rows are dropped: a violated constant row would sit in the elastic slack for the
+    whole solve and distort the merit.
+    """
+    from dvfopt.constraints import PhiPack
+    from dvfopt.core.slsqp_windowed.constraints3d import _injectivity_linear_constraint_3d
+
+    if getattr(c, 'pack', None) != PhiPack.DX_FIRST or free_mask.ndim != 3:
+        raise ValueError('3D orientation rows need a 3D DX_FIRST (simplex-family) constraint')
+    n = free_mask.size
+    lc = _injectivity_linear_constraint_3d(tuple(int(v) for v in free_mask.shape), float(delta))
+    if lc is None:
+        return sparse.csr_matrix((0, 3 * n)), np.zeros(0)
+    a = sparse.csr_matrix(lc.A)
+    free_cols = np.nonzero(np.tile(free_mask.ravel(), 3))[0]
+    touch = np.diff(a[:, free_cols].indptr) > 0  # rows with at least one free endpoint
+    a = a[touch]
+    return a, np.full(a.shape[0], 1.0 - float(delta))
 
 
 def _box_slices(box):
@@ -814,10 +853,14 @@ def windowed_correct(
     if orientation_delta is not None:
         from dvfopt.constraints import PhiPack
 
-        if getattr(constraint, "pack", None) != PhiPack.DY_FIRST:
-            # The edge-monotonicity rows are a simplex-family (DY_FIRST) formulation;
-            # the Jdet / finite families keep the plain rows (explicit requests on a
-            # sub-problem still raise in build_subproblem).
+        family_rows = getattr(constraint, "pack", None) == PhiPack.DY_FIRST or (
+            getattr(constraint, "dim", 2) == 3
+        )
+        if not family_rows:
+            # The edge-monotonicity rows are a simplex-family formulation (DY_FIRST in
+            # 2D, the registered 6-tet family in 3D); the Jdet / finite families keep
+            # the plain rows (explicit requests on a sub-problem still raise in
+            # build_subproblem).
             orientation_delta = None
     opts = _InnerOpts(
         no_tr_fallback,

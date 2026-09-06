@@ -128,3 +128,88 @@ def test_build_subproblem_3d_free_extra_and_volume_border():
     sub = build_subproblem(c, phi, (0, 3, 3, 7, 4, 8), THR, None, 1e-3)
     assert sub.patch_box == (0, 4, 2, 8, 3, 9)  # no ring past the z=0 face
     assert sub.free_mask[0:3, 1:5, 1:5].all() and sub.free_mask.sum() == 3 * 4 * 4
+
+
+def test_rows_3d_identity_equals_one_minus_delta_and_counts_every_edge():
+    from dvfopt.core.windowed._common import _orientation_rows_3d
+
+    c = SimplexConstraint3D(shape=(4, 4, 4))
+    a, b = _orientation_rows_3d(c, np.ones((4, 4, 4), bool), 0.01)
+    assert a.shape == (3 * 48, 3 * 64)  # 48 edges per axis on a 4^3 grid
+    np.testing.assert_allclose(a @ np.zeros(3 * 64) + b, 0.99)
+
+
+def test_rows_3d_keep_free_to_frozen_edges_and_drop_frozen_frozen():
+    from dvfopt.core.slsqp_windowed.constraints3d import _injectivity_linear_constraint_3d
+    from dvfopt.core.windowed._common import _orientation_rows_3d
+
+    c = SimplexConstraint3D(shape=(3, 3, 3))
+    fm = np.zeros((3, 3, 3), bool)
+    fm[1, 1, 1] = True
+    a, _b = _orientation_rows_3d(c, fm, 0.01)
+    assert a.shape[0] == 6  # the centre voxel's six axial edges, each free-to-frozen
+    n, centre = 27, 13
+    for r in range(6):
+        assert {centre, n + centre, 2 * n + centre} & set(a[r].indices.tolist())
+    # the 3D injectivity helper's own filter (BOTH endpoints free) would keep none of them
+    assert _injectivity_linear_constraint_3d((3, 3, 3), 0.01, freeze_mask=~fm) is None
+
+
+def test_rows_3d_rotated_cube_violates_and_compressed_cube_does_not():
+    from dvfopt.core.windowed._common import _orientation_rows_3d
+
+    # SimplexConstraint3D(shape=(2, 2, 2)).flatten() would hit validate_dvf's
+    # dimension-agnostic min_spatial_size=3 floor (unrelated to orientation rows,
+    # and shared with the 2D simplex family — see dvfopt/validation.py) before
+    # ever reaching the pack, so the DX_FIRST [dx | dy | dz] vector is built
+    # directly here, matching SimplexConstraint3D.flatten()'s own body byte for byte.
+    def pack(phi):
+        return np.concatenate([phi[2].ravel(), phi[1].ravel(), phi[0].ravel()])
+
+    c = SimplexConstraint3D(shape=(2, 2, 2))
+    a, b = _orientation_rows_3d(c, np.ones((2, 2, 2), bool), 0.01)
+    phi = np.zeros((3, 2, 2, 2))
+    phi[2, :, :, 0], phi[2, :, :, 1] = 1.0, -1.0  # x-edges flipped: deformed x goes 1 -> 0
+    assert (a @ pack(phi) + b).min() < 0
+    phi = np.zeros((3, 2, 2, 2))
+    phi[2, :, :, 1] = phi[1, :, 1, :] = phi[0, 1] = -0.5  # 50 % compression on every axis
+    assert (a @ pack(phi) + b).min() > 0
+
+
+def test_subproblem_3d_with_rows_jacobian_matches_finite_differences():
+    rng = np.random.default_rng(3)
+    phi = rng.normal(0, 0.2, (3, 5, 5, 6))
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    sub = build_subproblem(
+        c,
+        phi,
+        (1, 4, 1, 4, 1, 5),
+        THR,
+        NoneObjective(),
+        1e-3,
+        orientation_delta=0.01,
+        orientation_rows='edges',
+    )
+    assert sub.n_enforced > 6 * 4 * 4 * 5  # tet rows plus the edge rows
+    J = sub.cons_jac(sub.flat0).toarray()
+    assert J.shape == (sub.n_enforced, sub.flat0.size)
+    for k in rng.choice(sub.free_idx, 10, replace=False):
+        e = np.zeros_like(sub.flat0)
+        e[k] = 1e-6
+        fd = (sub.cons(sub.flat0 + e) - sub.cons(sub.flat0 - e)) / 2e-6
+        np.testing.assert_allclose(J[:, k], fd, atol=1e-6)
+
+
+def test_subproblem_3d_rejects_the_full_rows_kind():
+    c = SimplexConstraint3D(shape=(4, 4, 4))
+    with pytest.raises(ValueError, match='edges'):
+        build_subproblem(
+            c,
+            np.zeros((3, 4, 4, 4)),
+            (1, 3, 1, 3, 1, 3),
+            THR,
+            None,
+            1e-3,
+            orientation_delta=0.01,
+            orientation_rows='full',
+        )
