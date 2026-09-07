@@ -128,6 +128,19 @@ def test_exact_ls_degrades_to_tr_on_a_3d_field_and_still_refuses_other_ranks():
             objective=NoneObjective(),
             threshold=THR,
         )
+    # main's rank check, restored: a (3, D, H, W) array with a 2D constraint used to be
+    # caught by the `H, W = phi.shape[1:]` unpack; the n-D engine would otherwise take
+    # it silently under 'tr' and return the input untouched.
+    for rule in ("exact_ls", "tr"):
+        with pytest.raises(ValueError, match="2D"):
+            windowed_correct(
+                np.zeros((3, 4, 8, 8)),
+                "isqp",
+                constraint=SimplexConstraint2D(shape=(8, 8)),
+                objective=NoneObjective(),
+                threshold=THR,
+                step_rule=rule,
+            )
 
 
 # ---------------------------------------------------------------------------

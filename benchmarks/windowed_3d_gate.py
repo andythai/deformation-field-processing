@@ -42,11 +42,13 @@ from dvfopt.core.primitives import isqp as isqp_mod  # noqa: E402
 from dvfopt.core.windowed import _common as _cm  # noqa: E402
 from dvfopt.core.windowed import build_subproblem, windowed_correct  # noqa: E402
 from dvfopt.core.windowed._inners import solve_window_inner  # noqa: E402
+from dvfopt.io.fields import load_dvf  # noqa: E402
 from dvfopt.jacobian.tetrahedron_sign import (  # noqa: E402
     n_neg_best_diagonal,
     six_tet_min_volume_3d,
 )
 from dvfopt.objectives import L2Objective, NoneObjective  # noqa: E402
+from dvfopt.validation import validate_dvf  # noqa: E402
 
 OUT = os.path.join("benchmarks", "output", "windowed_3d")
 THR = 0.01
@@ -104,6 +106,8 @@ class _TimedQP:
         self._qp = qp
 
     def __getattr__(self, name):
+        if name == "_qp":  # copy/pickle probe it before __init__ runs -> infinite recursion
+            raise AttributeError(name)
         return getattr(self._qp, name)
 
     def __setattr__(self, name, value):
@@ -129,9 +133,7 @@ isqp_mod._make_qp = lambda *a, **k: _TimedQP(_orig_make_qp(*a, **k))
 
 # ---- helpers ---------------------------------------------------------------
 def _load(path):
-    phi = np.load(path).astype(np.float64)
-    assert phi.ndim == 4 and phi.shape[0] == 3, path
-    return phi
+    return validate_dvf(load_dvf(path), dim=3)
 
 
 def cut_raw(L=33):

@@ -28,7 +28,6 @@ extra opposite-diagonal corner rows need their own influenced-row
 handling, which is out of scope here (stage 2).
 """
 
-import functools
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable
@@ -46,7 +45,7 @@ from dvfopt.constraints import (
 from dvfopt.core.primitives.coloring import colored_jacobian, jacobian_coloring
 from dvfopt.exceptions import IncompatibleConstraintError
 from dvfopt.jacobian.numpy_jdet import _numpy_jdet_2d
-from dvfopt.jacobian.tetrahedron_sign import build_tet_sparse_jac, six_tet_min_volume_3d
+from dvfopt.jacobian.tetrahedron_sign import cached_tet_sparse_jac, six_tet_min_volume_3d
 
 
 @dataclass(frozen=True)
@@ -219,17 +218,6 @@ def _influenced_finite(c, free_mask, ph, pw, borders):
     return enforced_idx, jac_of
 
 
-# bounded: entries are ~1.2 KB per cube, so a few large shapes are all that fits
-@functools.lru_cache(maxsize=8)
-def _cached_tet_jac(pd, ph, pw):
-    """Native sparse tet-Jacobian builder for one patch shape (72 nnz per cube, one
-    vectorised pass per call). Cached per SHAPE here because
-    ``Constraint._cached_jac_builder`` memoises on the instance and
-    :func:`~dvfopt.core.windowed._common.build_subproblem` makes a fresh
-    constraint per window."""
-    return build_tet_sparse_jac(pd, ph, pw)
-
-
 def _influenced_tet3d(c, free_mask, pd, ph, pw, borders):
     # cube (k,i,j) is influenced iff any of its 8 corner voxels is free; tet volumes
     # are exact so every cube evaluates correctly (no volume-border special case).
@@ -243,12 +231,10 @@ def _influenced_tet3d(c, free_mask, pd, ph, pw, borders):
     m = cell.size
     assert 6 * m == c.n_constraints, 'six tet rows per cube'
     enforced_idx = np.concatenate([b * m + cell_flat for b in range(6)])
-    jac = _cached_tet_jac(pd, ph, pw)
-
-    def jac_of(f):
-        return jac(f)  # csr (6m, 3*pd*ph*pw); the caller slices the enforced rows
-
-    return enforced_idx, jac_of
+    # Cached per SHAPE, not per instance: `Constraint._cached_jac_builder` memoises on
+    # the instance and `build_subproblem` makes a fresh constraint per window. The
+    # builder returns `jac(f) -> csr (6m, 3*pd*ph*pw)`; the caller slices enforced rows.
+    return enforced_idx, cached_tet_sparse_jac(pd, ph, pw)
 
 
 # ---------------------------------------------------------------------------

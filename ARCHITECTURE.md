@@ -152,7 +152,7 @@ Imports flow one way. Breaking these is what re-tangles the package.
   Stopping is the mechanism: handing the remaining iterations to the `'tr'`
   ACCEPTANCE instead was measured worse (2350), because mid-run the ratio test
   accepts tiny steps rather than rejecting them. 2D only (a 6-tet row is cubic
-  along a line), guarded at `windowed_correct`'s entry. The maximal fold-free step
+  along a line), degraded to `'tr'` at `windowed_correct`'s entry on 3D. The maximal fold-free step
   cap tried alongside it is REFUTED — it strangles the elastic mechanism; do not
   add one, and do not scope `exact_ls` out of the no-TR rung (re-measured on the
   shipped implementation: 1918 vs 1684 on `z0_sliver`).

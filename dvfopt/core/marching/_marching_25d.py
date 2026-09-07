@@ -24,8 +24,6 @@ Solver-specific thresholds are carried INSIDE the args tuple rather than read
 from module globals.
 """
 
-import functools
-
 import numpy as np
 from scipy.ndimage import binary_dilation, find_objects
 from scipy.ndimage import label as cc_label
@@ -33,13 +31,11 @@ from scipy.ndimage import label as cc_label
 from dvfopt.core.marching._elastic_engine import ACTIVE_WINDOW, elastic_trust_solve
 from dvfopt.core.primitives.tri import tri_areas_flat
 from dvfopt.core.slp.tri_linearize import build_sparse_jacobian_T
-from dvfopt.jacobian.tetrahedron_sign import build_tet_sparse_jac, tet_volumes_flat
+from dvfopt.jacobian.tetrahedron_sign import cached_tet_sparse_jac, tet_volumes_flat
 
 
-@functools.lru_cache(maxsize=8)
 def _get_jac(D, H, W):
-    """Cached ``build_tet_sparse_jac`` (per-process; pool workers build their own)."""
-    return build_tet_sparse_jac(D, H, W)
+    return cached_tet_sparse_jac(D, H, W)
 
 
 def _stack_flat(lower, upper):

@@ -475,7 +475,10 @@ def correct_dvf(
             init_min,
             objective_label=(objective if isinstance(objective, str) else objective.label),
         )
-    if _wants_polish:
+    # `c` is in scope whenever _wants_polish is True (it is only set under
+    # objective='auto'); the per-window polish is a 2D-measured recipe and the 3D
+    # engine refuses it (phase 2), so gate the injection on the constraint's dim.
+    if _wants_polish and getattr(c, 'dim', 2) == 2:
         if strategy == 'isqp_windowed' and 'polish' not in strategy_kwargs:
             strategy_kwargs = dict(strategy_kwargs, polish='l2')
         elif (
@@ -498,11 +501,13 @@ def correct_dvf(
 def _isqp_windowed_ok(constraint: Constraint) -> bool:
     """Can the windowed elastic-QP engine serve *constraint* on this install?
 
-    Needs a locality entry (2D only — see
-    :data:`dvfopt.core.windowed.LOCALITY`, mirrored by
-    ``ISQPWindowedStrategy.accepts_constraints``) AND ``osqp`` importable.
-    ``SimplexConstraint2DFullCoverage`` (label ``'simplex'``) has no
-    locality entry, so only ``'simplex_standard'`` routes there.
+    Needs a locality entry (see :data:`dvfopt.core.windowed.LOCALITY`,
+    mirrored by ``ISQPWindowedStrategy.accepts_constraints``) AND ``osqp``
+    importable. ``SimplexConstraint2DFullCoverage`` (label ``'simplex'``) has
+    no locality entry, so only ``'simplex_standard'`` routes there. The
+    registry now also holds ``SimplexConstraint3D`` (3D port, phase 1); 3D
+    routing is unchanged because :func:`auto_strategy`'s 3D branch never
+    calls this.
     """
     import importlib.util
 

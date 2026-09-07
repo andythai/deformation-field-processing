@@ -357,3 +357,14 @@ def test_3d_solver_composition_and_string_recipe():
     assert res.corrected.shape == phi.shape and np.isfinite(res.corrected).all()
     res2 = correct_dvf(phi, constraint='simplex_3d', strategy='isqp_windowed', objective='none')
     assert np.array_equal(res2.corrected, res.corrected)  # same deterministic solve
+
+
+@needs_osqp
+def test_3d_auto_objective_recipe_does_not_inject_polish():
+    """``objective='auto'`` asks for the per-window ``polish='l2'`` on mild fields; that
+    is a 2D-measured recipe the 3D engine refuses, so the injection is dim-gated."""
+    from dvfopt import correct_dvf
+
+    phi = _planted_3d((8, 14, 14), amp=0.5)
+    res = correct_dvf(phi, constraint="simplex_3d", strategy="isqp_windowed", objective="auto")
+    assert res.corrected.shape == phi.shape and np.isfinite(res.corrected).all()

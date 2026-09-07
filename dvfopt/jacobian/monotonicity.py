@@ -1,8 +1,79 @@
 """Monotonicity (global injectivity) helpers for deformation fields."""
 
 import numpy as np
+import scipy.sparse
 
-from dvfopt._defaults import _unpack_size
+from dvfopt._defaults import _unpack_size, _unpack_size_3d
+
+
+def axial_gap_matrix(shape, free=None, endpoints='both'):
+    """Sparse ``A`` (csr) whose rows are the axial neighbour gaps of a ``(D, H, W)`` grid in
+    the DX_FIRST flat pack ``[dx | dy | dz]``: one row per neighbouring voxel pair along
+    each axis (x-gaps read the dx block, y-gaps dy, z-gaps dz), with ``-1`` at the previous
+    voxel and ``+1`` at the next, so ``1 + A @ phi`` is the deformed axial gap. Rows are
+    ordered x-gaps, then y-gaps, then z-gaps, each in C order.
+
+    ``free`` (optional bool array of ``shape``) filters the pairs: ``endpoints='both'``
+    keeps a pair only when BOTH voxels are free (the SLSQP sub-problem's semantics —
+    frozen pairs the input already violates would make it structurally infeasible);
+    ``endpoints='any'`` keeps a pair when AT LEAST ONE voxel is free (the windowed
+    engine's prevention rows — the free-to-frozen-ring edges are the ones that stop a
+    free voxel rotating against its pinned neighbour). Returns ``None`` when no row
+    survives.
+    """
+    if endpoints not in ('both', 'any'):
+        raise ValueError(f"unknown endpoints {endpoints!r}; valid: 'both', 'any'")
+    sz, sy, sx = _unpack_size_3d(shape)
+    voxels = sz * sy * sx
+    lin = np.arange(voxels).reshape(sz, sy, sx)
+    free = None if free is None else np.asarray(free, bool)
+
+    def _keep(a, b):
+        if free is None:
+            return None
+        return (a & b) if endpoints == 'both' else (a | b)
+
+    rows_prev, rows_next, block = [], [], []
+    # (prev-slice, next-slice, channel block index) per axis:
+    # x-gaps -> dx block 0, y-gaps -> dy block 1, z-gaps -> dz block 2.
+    specs = [
+        (
+            lin[:, :, :-1],
+            lin[:, :, 1:],
+            0,
+            None if free is None else _keep(free[:, :, :-1], free[:, :, 1:]),
+        ),
+        (
+            lin[:, :-1, :],
+            lin[:, 1:, :],
+            1,
+            None if free is None else _keep(free[:, :-1, :], free[:, 1:, :]),
+        ),
+        (
+            lin[:-1, :, :],
+            lin[1:, :, :],
+            2,
+            None if free is None else _keep(free[:-1, :, :], free[1:, :, :]),
+        ),
+    ]
+    for prev, nxt, blk, keep in specs:
+        p = prev.ravel()
+        n = nxt.ravel()
+        if keep is not None:
+            k = keep.ravel()
+            p, n = p[k], n[k]
+        rows_prev.append(p + blk * voxels)
+        rows_next.append(n + blk * voxels)
+        block.append(len(p))
+    prev_cols = np.concatenate(rows_prev)
+    next_cols = np.concatenate(rows_next)
+    n_rows = prev_cols.size
+    if n_rows == 0:
+        return None
+    row_idx = np.repeat(np.arange(n_rows), 2)
+    col_idx = np.stack([prev_cols, next_cols], axis=1).ravel()
+    data = np.tile(np.array([-1.0, 1.0]), n_rows)
+    return scipy.sparse.csr_matrix((data, (row_idx, col_idx)), shape=(n_rows, 3 * voxels))
 
 
 def _monotonicity_diffs_2d(dy, dx):

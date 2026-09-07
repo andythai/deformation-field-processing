@@ -333,27 +333,22 @@ def _orientation_rows_3d(c, free_mask, delta):
     least ``delta`` on its own axis: ``1 + dx[k,i,j+1] - dx[k,i,j] >= delta`` for the
     x-edges (dx block), likewise y-edges on dy and z-edges on dz — the ``'edges'`` kind
     of :func:`_orientation_rows` in the ``DX_FIRST`` pack ``[dx | dy | dz]``. The row
-    matrix is the 3D injectivity helper's (``core.slsqp_windowed.constraints3d``) built
-    WITHOUT its freeze filter: that filter keeps only rows whose BOTH endpoints are
-    free, but the free-to-frozen-ring edges are exactly the rows that stop a free voxel
-    rotating against its pinned neighbour, so here a row is kept when it touches ANY
-    free column (the ``core.marching._mono_rows.mono_block`` predicate). Frozen-frozen
-    rows are dropped: a violated constant row would sit in the elastic slack for the
-    whole solve and distort the merit.
+    matrix is :func:`dvfopt.jacobian.monotonicity.axial_gap_matrix` with its
+    ``endpoints='any'`` filter: the free-to-frozen-ring edges are exactly the rows that
+    stop a free voxel rotating against its pinned neighbour (the
+    ``core.marching._mono_rows.mono_block`` predicate), so a both-endpoints-free filter
+    would drop the load-bearing rows. Frozen-frozen rows ARE dropped: a violated constant
+    row would sit in the elastic slack for the whole solve and distort the merit.
     """
     from dvfopt.constraints import PhiPack
-    from dvfopt.core.slsqp_windowed.constraints3d import _injectivity_linear_constraint_3d
+    from dvfopt.jacobian.monotonicity import axial_gap_matrix
 
     if getattr(c, 'pack', None) != PhiPack.DX_FIRST or free_mask.ndim != 3:
         raise ValueError('3D orientation rows need a 3D DX_FIRST (simplex-family) constraint')
     n = free_mask.size
-    lc = _injectivity_linear_constraint_3d(tuple(int(v) for v in free_mask.shape), float(delta))
-    if lc is None:
+    a = axial_gap_matrix(free_mask.shape, free=free_mask, endpoints='any')
+    if a is None:
         return sparse.csr_matrix((0, 3 * n)), np.zeros(0)
-    a = sparse.csr_matrix(lc.A)
-    free_cols = np.nonzero(np.tile(free_mask.ravel(), 3))[0]
-    touch = np.diff(a[:, free_cols].indptr) > 0  # rows with at least one free endpoint
-    a = a[touch]
     return a, np.full(a.shape[0], 1.0 - float(delta))
 
 
@@ -711,7 +706,7 @@ def windowed_correct(
     fallback rung too — scoping it out of that rung was measured WORSE (re-measured
     on the shipped implementation: ``z0_sliver`` 1918 SQP iterations vs 1684).
     ``'tr'`` restores the ratio-test path byte for byte. ``'exact_ls'`` is
-    2D-only and rejected at this entry otherwise.
+    2D-only: on a 3D field it degrades to ``'tr'`` (DEBUG log).
 
     ``exact_ls_fallback_steps`` (default 3, 0 = off) is what keeps ``'exact_ls'``
     from grinding on a window it cannot solve. The exact minimiser always finds
@@ -858,7 +853,14 @@ def windowed_correct(
         raise ValueError(f"unknown step_rule {step_rule!r}; valid: 'tr', 'exact_ls'")
     if reanchor not in _REANCHOR_KINDS:
         raise ValueError(f"unknown reanchor {reanchor!r}; valid: {list(_REANCHOR_KINDS)}")
-    is3d = getattr(constraint, 'dim', 2) == 3
+    loc = _locality_of(constraint)  # raises IncompatibleConstraintError if unregistered
+    dim = int(constraint.dim)
+    if np.asarray(phi_in).ndim != dim + 1:
+        raise ValueError(
+            f"windowed_correct: a {dim}D constraint needs a rank-{dim + 1} ({dim}, ...) field; "
+            f"got rank {np.asarray(phi_in).ndim}"
+        )
+    is3d = dim == 3
     if step_rule == 'exact_ls' and is3d:
         # The exact line model needs rows that are BILINEAR in the displacements — true
         # of every 2D family here, false of a 6-tet volume (trilinear, hence cubic along
@@ -868,27 +870,19 @@ def windowed_correct(
             "windowed_correct: step_rule='exact_ls' is 2D-only; using 'tr' on this 3D field"
         )
         step_rule = 'tr'
-    elif step_rule == 'exact_ls' and np.asarray(phi_in).ndim != 3:
-        raise ValueError("step_rule='exact_ls' requires a 2D (2, H, W) field")
     if is3d and (reanchor != 'none' or polish is not None):
         raise ValueError(
             'reanchor and polish are not yet supported on 3D fields (3D port, phase 2)'
         )
     if is3d and orientation_delta is not None and orientation_rows != 'edges':
         raise ValueError("3D orientation rows: only kind='edges' exists (no convexity rows in 3D)")
-    loc = _locality_of(constraint)
     if orientation_delta is not None:
         from dvfopt.constraints import PhiPack
 
-        family_rows = getattr(constraint, "pack", None) == PhiPack.DY_FIRST or (
-            getattr(constraint, "dim", 2) == 3
-        )
+        # The simplex families provide edge rows; Jdet / finite keep the plain rows
+        # (an explicit request on such a sub-problem still raises in build_subproblem).
+        family_rows = constraint.pack == PhiPack.DY_FIRST or is3d
         if not family_rows:
-            # The edge-monotonicity rows are a simplex-family formulation (DY_FIRST in
-            # 2D, any dim == 3 constraint — only SimplexConstraint3D reaches this gate
-            # because `_locality_of` runs first); the Jdet / finite families keep the
-            # plain rows (explicit requests on a sub-problem still raise in
-            # build_subproblem).
             orientation_delta = None
     opts = _InnerOpts(
         no_tr_fallback,

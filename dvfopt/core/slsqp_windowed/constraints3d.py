@@ -6,6 +6,7 @@ from scipy.optimize import LinearConstraint, NonlinearConstraint
 
 from dvfopt._defaults import _unpack_size_3d
 from dvfopt.core.slsqp_windowed.gradients3d import jdet_constraint_jacobian_3d
+from dvfopt.jacobian.monotonicity import axial_gap_matrix
 from dvfopt.jacobian.numpy_jdet import _numpy_jdet_3d
 
 
@@ -41,54 +42,16 @@ def _injectivity_linear_constraint_3d(subvolume_size, inj_lb, freeze_mask=None):
     non-frozen are kept (the 2D ``exclude_boundaries`` spirit) — frozen
     ring pairs the input may already violate would otherwise make the
     sub-problem structurally infeasible.
-    """
-    sz, sy, sx = _unpack_size_3d(subvolume_size)
-    voxels = sz * sy * sx
-    lin = np.arange(voxels).reshape(sz, sy, sx)
-    free = None if freeze_mask is None else ~freeze_mask
 
-    rows_prev, rows_next, block = [], [], []
-    # (prev-slice, next-slice, channel block index) per axis:
-    # x-gaps -> dx block 0, y-gaps -> dy block 1, z-gaps -> dz block 2.
-    specs = [
-        (
-            lin[:, :, :-1],
-            lin[:, :, 1:],
-            0,
-            None if free is None else free[:, :, :-1] & free[:, :, 1:],
-        ),
-        (
-            lin[:, :-1, :],
-            lin[:, 1:, :],
-            1,
-            None if free is None else free[:, :-1, :] & free[:, 1:, :],
-        ),
-        (
-            lin[:-1, :, :],
-            lin[1:, :, :],
-            2,
-            None if free is None else free[:-1, :, :] & free[1:, :, :],
-        ),
-    ]
-    for prev, nxt, blk, keep in specs:
-        p = prev.ravel()
-        n = nxt.ravel()
-        if keep is not None:
-            k = keep.ravel()
-            p, n = p[k], n[k]
-        rows_prev.append(p + blk * voxels)
-        rows_next.append(n + blk * voxels)
-        block.append(len(p))
-    prev_cols = np.concatenate(rows_prev)
-    next_cols = np.concatenate(rows_next)
-    n_rows = prev_cols.size
-    if n_rows == 0:
-        return None
-    row_idx = np.repeat(np.arange(n_rows), 2)
-    col_idx = np.stack([prev_cols, next_cols], axis=1).ravel()
-    data = np.tile(np.array([-1.0, 1.0]), n_rows)
-    A = scipy.sparse.csr_matrix((data, (row_idx, col_idx)), shape=(n_rows, 3 * voxels))
-    return LinearConstraint(A, inj_lb - 1.0, np.inf)
+    The row matrix itself lives in
+    :func:`dvfopt.jacobian.monotonicity.axial_gap_matrix` (shared with the
+    windowed engine's 3D orientation rows, which use its ``'any'`` filter).
+    """
+    A = axial_gap_matrix(
+        subvolume_size,
+        free=None if freeze_mask is None else ~np.asarray(freeze_mask, bool),
+    )
+    return None if A is None else LinearConstraint(A, inj_lb - 1.0, np.inf)
 
 
 def _build_constraints_3d(
