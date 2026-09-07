@@ -6,6 +6,53 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — 3D windowed engine, phase 1: family plumbing + certificate (`SimplexConstraint3D` in `ISQPWindowedStrategy`)
+
+- `windowed_correct` / `ISQPWindowedStrategy` accept `SimplexConstraint3D` on
+  `(3, D, H, W)` fields: `LOCALITY[SimplexConstraint3D]` (ring 1, `six_tet_min_volume_3d`
+  fold map, eight-corner influenced rule, shape-cached native tet Jacobian), n-D boxes
+  through three helpers (`_box_slices` / `_box_size` / `_pad_box`, byte-identical in 2D —
+  verified main-vs-branch by `benchmarks/windowed_2d_identity.py`: 21 cases, every field
+  `array_equal`, every report identical), 3D axial edge rows (every edge with at least one
+  free endpoint, all three axes, DX_FIRST; the 3D injectivity helper's both-endpoints-free
+  filter is the wrong predicate for a frozen-ring window), the `'tr'` step rule
+  (`'exact_ls'` degrades on 3D), and the certificate fields `folds_after_zero` /
+  `best_diag_floor_after` / `best_diag_floor_after_zero`. Not yet ported (phase 2): the
+  coarse warm start, mop and re-seed are skipped on 3D, the giant cap is advisory
+  (over-cap regions are solved whole), `reanchor` / `polish` raise.
+- Measured (`benchmarks/windowed_3d_gate.py`, `'tr'`, threshold 0.01):
+
+  | case | cfg | folds_in | folds_out | folds_out_zero | floor_in | floor_out | floor_out_zero | min_out | damage | n_windows | sqp_iters | exits | wall_s | l2_move | max_abs_dz |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+  | slice090 | l2_norows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 16 | 'ftol': 1 | 5.91 | 6.66 | 0.358 |
+  | slice090 | l2_rows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 18 | 'ftol': 1 | 7.84 | 7.28 | 0.358 |
+  | slice090 | none_norows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 7 | 'step-tol': 1 | 2.41 | 8.93 | 0.822 |
+  | slice090 | none_rows | 61 | 0 | 0 | 53 | 0 | 0 | 0.0110 | 0 | 1 | 7 | 'ftol': 1 | 3.04 | 9.31 | 0.726 |
+  | slice200 | l2_norows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0110 | 0 | 1 | 32 | 'ftol': 1 | 8.01 | 4.88 | 0.744 |
+  | slice200 | l2_rows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0110 | 0 | 1 | 13 | 'ftol': 1 | 3.83 | 6.97 | 0.625 |
+  | slice200 | none_norows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0112 | 0 | 1 | 8 | 'step-tol': 1 | 2.61 | 7.00 | 0.998 |
+  | slice200 | none_rows | 30 | 0 | 0 | 18 | 0 | 0 | 0.0110 | 0 | 1 | 6 | 'ftol': 1 | 1.99 | 7.72 | 0.773 |
+  | slice350 | l2_norows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0110 | 0 | 1 | 232 | 'tr-collapse': 1, 'maxiter': 1 | 12.8 | 9.71 | 0.692 |
+  | slice350 | l2_rows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0109 | 0 | 1 | 17 | 'ftol': 1 | 7.73 | 11.5 | 0.547 |
+  | slice350 | none_norows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0111 | 0 | 1 | 19 | 'model-flat': 1 | 5.37 | 17.6 | 1.34 |
+  | slice350 | none_rows | 70 | 0 | 0 | 57 | 0 | 0 | 0.0110 | 0 | 1 | 8 | 'step-tol': 1 | 3.00 | 14.6 | 0.851 |
+  | subvol16 | l2_norows | 721 | 11 | 11 | 702 | 11 | 11 | -0.00542 | 0 | 8 | 1108 | 'tr-collapse': 16, 'linesearch-stall': 16 | 3990 | 33.3 | 2.38 |
+  | subvol16 | l2_rows | 721 | 0 | 0 | 702 | 0 | 0 | 0.0110 | 0 | 1 | 107 | 'tr-collapse': 1, 'linesearch-stall': 1 | 638 | 55.8 | 0.722 |
+  | subvol16 | none_norows | 721 | 14 | 14 | 702 | 14 | 13 | -0.00168 | 0 | 5 | 677 | 'tr-collapse': 7, 'maxiter': 2, 'linesearch-stall': 8, 'model-flat': 3 | 2440 | 61.5 | 5.21 |
+  | subvol16 | none_rows | 721 | 0 | 0 | 702 | 0 | 0 | 0.0110 | 0 | 1 | 14 | 'step-tol': 1 | 159 | 86.3 | 1.91 |
+
+- Per-SQP-iteration cost vs window volume (one frozen-ring window, 8 SQP iterations,
+  hybrid backend):
+
+  | L | n_free | n_rows | qp_vars | nnz_jac | jac_s | cons_s | sqp_iters | s_per_sqp_iter | exit | qp_s_median | admm_median |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | 9 | 1029 | 4248 | 5277 | 39216 | 0.00109 | 0.000218 | 8 | 0.289 | maxiter | 0.0944 | 338 |
+  | 17 | 10125 | 35376 | 45501 | 316512 | 0.00686 | 0.000683 | 8 | 11.1 | maxiter | 9.45 | 510 |
+  | 25 | 36501 | 121032 | 157533 | 1071504 | 0.0225 | 0.00211 | 8 | 68.6 | maxiter | 46.8 | 488 |
+  | 33 | 89373 | 288864 | 378237 | 2543808 | 0.0608 | 0.00821 | 8 | 411 | maxiter | 233 | 513 |
+
+  > **The two unknowns.** U1 (cost): per SQP iteration 0.29 / 11.1 / 68.6 / 411 s at 9³ / 17³ / 25³ / 33³ — 5.3k / 45k / 158k / 378k QP variables (one slack per row); at 33³ every warm OSQP solve hits its 1000-iteration cap and Clarabel takes 195-240 s per cold solve. The QP solve is the whole cost (the Jacobian build is ≤ 0.4 % of an iteration), so phase 2's tiler must keep windows near 17³ and phase 3 starts at the QP backend, not the line search. U2 (convergence): the 16³ B0039 sub-volume (721 folds at threshold, 702 negative under every diagonal on input, where `correct_dvf_3d` had left one residual) reaches 0 fixed-6-tet folds and 0 best-diagonal floor at damage 0 under the default config — in-solve L2 + edge rows — in 107 SQP iterations / 638 s (L2 move 55.8): the ratio test alone stalls once (`tr-collapse`) and the no-trust-region line-search rung finishes it; with `objective='none'` + rows it converges directly in 14 iterations / 159 s; without the rows every rung of the ladder plateaus at 11-14 residual folds (1108 / 677 SQP iterations, 3991 / 2437 s), so the edge rows are load-bearing in 3D exactly as in 2D. `exits` counts inner calls (ladder rungs), not windows.
+
 ### Measured — 2.5D `orientation_delta=0.01` on the full 528-slice B0039 volume (sweep stage)
 
 - base → rows: folds 66 → 50, true fold floor (negative under every main

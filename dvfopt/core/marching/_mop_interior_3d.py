@@ -18,7 +18,6 @@ all B0039 file-path / checkpoint / resume specifics removed and module
 constants turned into parameters.
 """
 
-import functools
 import time
 
 import numpy as np
@@ -30,16 +29,14 @@ from dvfopt.core.marching._elastic_engine import ACTIVE_WINDOW, elastic_trust_so
 from dvfopt.core.marching._precondition import require_25d_input
 from dvfopt.core.primitives.tri import tri_areas_flat
 from dvfopt.jacobian.tetrahedron_sign import (
-    build_tet_sparse_jac,
+    cached_tet_sparse_jac,
     six_tet_min_volume_3d,
     tet_volumes_flat,
 )
 
 
-@functools.lru_cache(maxsize=8)
 def _get_jac(D, H, W):
-    """Cached ``build_tet_sparse_jac`` (per-process cache)."""
-    return build_tet_sparse_jac(D, H, W)
+    return cached_tet_sparse_jac(D, H, W)
 
 
 def _stack(box):

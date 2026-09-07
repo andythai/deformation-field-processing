@@ -58,7 +58,7 @@ import numpy as np
 from scipy import ndimage, sparse
 from scipy.sparse.linalg import spsolve
 
-from dvfopt._logging import log_warning
+from dvfopt._logging import log_warning, logger
 from dvfopt.objectives import L2Objective, _kind_eps, make_objective
 
 from ._inners import _ISQP_LABELS, WindowSub, solve_window_inner
@@ -177,7 +177,8 @@ def build_subproblem(
     orientation_delta=None,
     orientation_rows='full',
 ):
-    """Build the window sub-problem for a free box ``(fy0, fy1, fx0, fx1)`` (global).
+    """Build the window sub-problem for a free box of per-axis ``(lo, hi)`` pairs
+    (global; ``(fy0, fy1, fx0, fx1)`` in 2D, ``(fz0, fz1, fy0, fy1, fx0, fx1)`` in 3D).
 
     Expands the free box by the family ring to a patch, instantiates a
     patch-shaped clone of ``constraint``'s type, selects the free pixels and the
@@ -194,37 +195,40 @@ def build_subproblem(
     convexity rows) for every edge / cell with a free pixel. A cell on the rotated
     orientation branch violates them, so with the rows the QP never heads there --
     and they are linear, hence exact in the QP (no thin-cell linearisation error).
-    2D, ``PhiPack.DY_FIRST`` families only.
+    2D, ``PhiPack.DY_FIRST`` families only. On a 3D patch the rows are
+    :func:`_orientation_rows_3d` (axial edges on all three axes, ``'edges'`` only).
 
-    ``free_extra`` (optional global ``(H, W)`` bool mask) is INTERSECTED with the
-    free box, so a caller can free a subset of it — the re-anchor stage frees only
-    pixels the main solve moved. ``None`` (default) frees the whole box. The patch
-    is still the box expanded by the family ring, so the enforced rows a free pixel
-    influences are all in-patch either way.
+    ``free_extra`` (optional global bool mask of the field's spatial shape) is
+    INTERSECTED with the free box, so a caller can free a subset of it — the
+    re-anchor stage frees only pixels the main solve moved. ``None`` (default)
+    frees the whole box. The patch is still the box expanded by the family ring,
+    so the enforced rows a free pixel influences are all in-patch either way.
     """
-    H, W = phi_dydx.shape[1:]
+    shape = phi_dydx.shape[1:]
     loc = _locality_of(constraint)
     ring = loc.ring
-    fy0, fy1, fx0, fx1 = free_box
-    py0, py1 = max(0, fy0 - ring), min(H, fy1 + ring)
-    px0, px1 = max(0, fx0 - ring), min(W, fx1 + ring)
-    patch = np.ascontiguousarray(phi_dydx[:, py0:py1, px0:px1])
-    ph, pw = patch.shape[1:]
-    c = type(constraint)(shape=(ph, pw))
+    patch_box = _pad_box(free_box, shape, ring)
+    patch = np.ascontiguousarray(phi_dydx[(slice(None), *_box_slices(patch_box))])
+    pshape = patch.shape[1:]
+    c = type(constraint)(shape=pshape)
     flat0 = np.asarray(c.flatten(patch), dtype=np.float64)
 
     # free pixels (patch-local): the free box, clipped into the patch
-    free_mask = np.zeros((ph, pw), bool)
-    free_mask[fy0 - py0 : fy1 - py0, fx0 - px0 : fx1 - px0] = True
+    local = tuple(int(free_box[i]) - int(patch_box[2 * (i // 2)]) for i in range(len(free_box)))
+    free_mask = np.zeros(pshape, bool)
+    free_mask[_box_slices(local)] = True
     if free_extra is not None:
-        free_mask &= free_extra[py0:py1, px0:px1]
+        free_mask &= free_extra[_box_slices(patch_box)]
 
-    enforced_idx, jac_of = loc.influenced(
-        c, free_mask, ph, pw, (py0 == 0, py1 == H, px0 == 0, px1 == W)
+    borders = tuple(
+        b
+        for ax, n in enumerate(shape)
+        for b in (patch_box[2 * ax] == 0, patch_box[2 * ax + 1] == n)
     )
+    enforced_idx, jac_of = loc.influenced(c, free_mask, *pshape, borders)
 
     # free variable indices in the constraint's own pack (never hand-packed)
-    free_phi = np.stack([free_mask, free_mask]).astype(float)
+    free_phi = np.stack([free_mask] * phi_dydx.shape[0]).astype(float)
     free_idx = np.nonzero(np.asarray(c.flatten(free_phi)) > 0.5)[0]
 
     target = threshold + margin_delta
@@ -237,9 +241,16 @@ def build_subproblem(
 
     n_rows = enforced_idx.size
     if orientation_delta is not None:
-        a_or, b_or = _orientation_rows(
-            c, free_mask, float(orientation_delta), kind=orientation_rows
-        )
+        if len(pshape) == 3:
+            if orientation_rows != 'edges':
+                raise ValueError(
+                    "3D orientation rows: only kind='edges' exists (no convexity rows in 3D)"
+                )
+            a_or, b_or = _orientation_rows_3d(c, free_mask, float(orientation_delta))
+        else:
+            a_or, b_or = _orientation_rows(
+                c, free_mask, float(orientation_delta), kind=orientation_rows
+            )
         base_cons, base_jac = cons, cons_jac
 
         def cons(f, _a=a_or, _b=b_or):
@@ -261,7 +272,7 @@ def build_subproblem(
         hess,
         free_idx,
         free_mask,
-        (py0, py1, px0, px1),
+        patch_box,
         n_rows,
     )
 
@@ -315,8 +326,58 @@ def _orientation_rows(c, free_mask, delta, kind='full'):
     return a, np.asarray(rhs)
 
 
+def _orientation_rows_3d(c, free_mask, delta):
+    """Sparse ``(A, b)`` with ``A @ x + b >= 0`` the axial edge rows of a 3D patch.
+
+    Every grid edge with at least one FREE endpoint keeps a positive projection of at
+    least ``delta`` on its own axis: ``1 + dx[k,i,j+1] - dx[k,i,j] >= delta`` for the
+    x-edges (dx block), likewise y-edges on dy and z-edges on dz — the ``'edges'`` kind
+    of :func:`_orientation_rows` in the ``DX_FIRST`` pack ``[dx | dy | dz]``. The row
+    matrix is :func:`dvfopt.jacobian.monotonicity.axial_gap_matrix` with its
+    ``endpoints='any'`` filter: the free-to-frozen-ring edges are exactly the rows that
+    stop a free voxel rotating against its pinned neighbour (the
+    ``core.marching._mono_rows.mono_block`` predicate), so a both-endpoints-free filter
+    would drop the load-bearing rows. Frozen-frozen rows ARE dropped: a violated constant
+    row would sit in the elastic slack for the whole solve and distort the merit.
+    """
+    from dvfopt.constraints import PhiPack
+    from dvfopt.jacobian.monotonicity import axial_gap_matrix
+
+    if getattr(c, 'pack', None) != PhiPack.DX_FIRST or free_mask.ndim != 3:
+        raise ValueError('3D orientation rows need a 3D DX_FIRST (simplex-family) constraint')
+    n = free_mask.size
+    a = axial_gap_matrix(free_mask.shape, free=free_mask, endpoints='any')
+    if a is None:
+        return sparse.csr_matrix((0, 3 * n)), np.zeros(0)
+    return a, np.full(a.shape[0], 1.0 - float(delta))
+
+
+def _box_slices(box):
+    """``(a0, a1, b0, b1, ...)`` -> ``(slice(a0, a1), slice(b0, b1), ...)`` — one
+    slice per axis, so ``arr[(slice(None), *_box_slices(box))]`` crops a
+    ``(C, *shape)`` field to the box in any dimension."""
+    return tuple(slice(int(box[i]), int(box[i + 1])) for i in range(0, len(box), 2))
+
+
+def _box_size(box):
+    """Grid points inside ``box`` (area in 2D, volume in 3D)."""
+    n = 1
+    for i in range(0, len(box), 2):
+        n *= max(0, int(box[i + 1]) - int(box[i]))
+    return n
+
+
+def _pad_box(box, shape, pad):
+    """Grow every side of ``box`` by ``pad`` grid points, clipped to ``shape``."""
+    out = []
+    for ax, n in enumerate(shape):
+        out.append(max(0, int(box[2 * ax]) - pad))
+        out.append(min(int(n), int(box[2 * ax + 1]) + pad))
+    return tuple(out)
+
+
 def find_windows(mask, margin, ring):
-    """Free boxes ``(fy0, fy1, fx0, fx1)`` around fold clusters.
+    """Free boxes around fold clusters, per-axis ``(lo, hi)`` pairs in axis order.
 
     Dilating the fold mask by ``margin+ring`` before labelling merges clusters whose
     (free box + ring) regions could touch, so a window's free set does not fall in
@@ -328,18 +389,19 @@ def find_windows(mask, margin, ring):
     The dilated bbox is inset by ``ring`` to recover the ``cluster + margin`` free
     box — but NOT on a side that reached the image border, where the fold sits on
     the border line and must stay free (mirrors the Schwarz tiler's border guard).
+
+    Works in any dimension: boxes are per-axis ``(lo, hi)`` pairs in axis order.
     """
     grow = margin + ring
     dil = ndimage.binary_dilation(mask, iterations=grow)
     lbl, n = ndimage.label(dil)
     boxes = []
-    H, W = mask.shape
-    for sy, sx in ndimage.find_objects(lbl):
-        fy0 = sy.start + ring if sy.start > 0 else 0  # keep image-border folds free
-        fy1 = sy.stop - ring if sy.stop < H else H
-        fx0 = sx.start + ring if sx.start > 0 else 0
-        fx1 = sx.stop - ring if sx.stop < W else W
-        boxes.append((fy0, fy1, fx0, fx1))
+    for sl in ndimage.find_objects(lbl):
+        box = []
+        for s, n_ax in zip(sl, mask.shape):
+            box.append(s.start + ring if s.start > 0 else 0)  # keep image-border folds free
+            box.append(s.stop - ring if s.stop < n_ax else n_ax)
+        boxes.append(tuple(box))
     return boxes
 
 
@@ -350,6 +412,7 @@ class WindowRec:
     fx0: int = 0
     ph: int = 0
     pw: int = 0
+    patch_box: tuple = ()  # per-axis (lo, hi) pairs of the patch, any dimension
     n_free: int = 0
     n_enforced: int = 0
     inner_iters: int = 0
@@ -419,6 +482,14 @@ class SliceReport:
     reseed_px: int = 0  # pixels re-seeded (all rounds)
     reseed_folds_before: int = -1  # folds when the stage started / when it ended
     reseed_folds_after: int = -1
+    # 3D certificate (SimplexConstraint3D only; -1 on 2D fields): the fixed-diagonal
+    # 6-tet fold count at 0 (folds_after is at `threshold`) and the best-of-4-diagonals
+    # floor — cubes no main-diagonal split certifies — at `threshold` and at 0
+    # (`tetrahedron_sign.n_neg_best_diagonal`, `<=` semantics; the rows are driven
+    # to threshold + margin_delta so no cell parks exactly on the threshold).
+    folds_after_zero: int = -1
+    best_diag_floor_after: int = -1
+    best_diag_floor_after_zero: int = -1
     rounds: int = 0
     time_s: float = 0.0
     windows: list = field(default_factory=list)
@@ -548,14 +619,19 @@ def windowed_correct(
     record_history=False,
     step_callback=None,
 ):
-    """Correct a full ``(2, H, W)`` slice by solving one small window per fold
-    cluster. Returns ``(phi_out, SliceReport)``.
+    """Correct a full ``(2, H, W)`` slice — or, with
+    :class:`~dvfopt.constraints.SimplexConstraint3D`, a ``(3, D, H, W)`` volume
+    (3D port, phase 1: round loop + window ladder, ``'tr'`` step rule, 3D edge
+    rows; the coarse warm start, mop and re-seed are skipped, the giant cap is
+    advisory, ``reanchor`` / ``polish`` raise) — by solving one small window per
+    fold cluster. Returns ``(phi_out, SliceReport)``.
 
-    ``constraint`` is a registered 2D constraint instance
+    ``constraint`` is a registered constraint instance
     (:class:`~dvfopt.constraints.JdetConstraint2D`,
     :class:`~dvfopt.constraints.SimplexConstraint2D`,
-    :class:`~dvfopt.constraints.SimplexConstraint2DBilinear`, or
-    :class:`~dvfopt.constraints.FiniteJdetConstraint2D` — see
+    :class:`~dvfopt.constraints.SimplexConstraint2DBilinear`,
+    :class:`~dvfopt.constraints.FiniteJdetConstraint2D`, or
+    :class:`~dvfopt.constraints.SimplexConstraint3D` — see
     :data:`~dvfopt.core.windowed._locality.LOCALITY`); ``objective`` is a
     :class:`~dvfopt.objectives.Objective` (``None`` -> ``L2Objective()``; the
     L1 smoothing eps rides on ``L1Objective(eps=...)``).
@@ -630,7 +706,7 @@ def windowed_correct(
     fallback rung too — scoping it out of that rung was measured WORSE (re-measured
     on the shipped implementation: ``z0_sliver`` 1918 SQP iterations vs 1684).
     ``'tr'`` restores the ratio-test path byte for byte. ``'exact_ls'`` is
-    2D-only and rejected at this entry otherwise.
+    2D-only: on a 3D field it degrades to ``'tr'`` (DEBUG log).
 
     ``exact_ls_fallback_steps`` (default 3, 0 = off) is what keeps ``'exact_ls'``
     from grinding on a window it cannot solve. The exact minimiser always finds
@@ -777,19 +853,36 @@ def windowed_correct(
         raise ValueError(f"unknown step_rule {step_rule!r}; valid: 'tr', 'exact_ls'")
     if reanchor not in _REANCHOR_KINDS:
         raise ValueError(f"unknown reanchor {reanchor!r}; valid: {list(_REANCHOR_KINDS)}")
-    if step_rule == 'exact_ls' and np.asarray(phi_in).ndim != 3:
-        # The exact line model needs rows that are BILINEAR in (dy, dx) — true of
-        # every 2D family here, false in 3D (a 6-tet volume is trilinear, hence
-        # cubic along a line). Guarded here, at the only caller, not in the driver.
-        raise ValueError("step_rule='exact_ls' requires a 2D (2, H, W) field")
-    loc = _locality_of(constraint)
+    loc = _locality_of(constraint)  # raises IncompatibleConstraintError if unregistered
+    dim = int(constraint.dim)
+    if np.asarray(phi_in).ndim != dim + 1:
+        raise ValueError(
+            f"windowed_correct: a {dim}D constraint needs a rank-{dim + 1} ({dim}, ...) field; "
+            f"got rank {np.asarray(phi_in).ndim}"
+        )
+    is3d = dim == 3
+    if step_rule == 'exact_ls' and is3d:
+        # The exact line model needs rows that are BILINEAR in the displacements — true
+        # of every 2D family here, false of a 6-tet volume (trilinear, hence cubic along
+        # a line). Degrade to the ratio test — the way orientation_delta is dropped on
+        # non-DY_FIRST packs below — until phase 3 of the 3D port ships the cubic model.
+        logger.debug(
+            "windowed_correct: step_rule='exact_ls' is 2D-only; using 'tr' on this 3D field"
+        )
+        step_rule = 'tr'
+    if is3d and (reanchor != 'none' or polish is not None):
+        raise ValueError(
+            'reanchor and polish are not yet supported on 3D fields (3D port, phase 2)'
+        )
+    if is3d and orientation_delta is not None and orientation_rows != 'edges':
+        raise ValueError("3D orientation rows: only kind='edges' exists (no convexity rows in 3D)")
     if orientation_delta is not None:
         from dvfopt.constraints import PhiPack
 
-        if getattr(constraint, "pack", None) != PhiPack.DY_FIRST:
-            # The edge-monotonicity rows are a simplex-family (DY_FIRST) formulation;
-            # the Jdet / finite families keep the plain rows (explicit requests on a
-            # sub-problem still raise in build_subproblem).
+        # The simplex families provide edge rows; Jdet / finite keep the plain rows
+        # (an explicit request on such a sub-problem still raises in build_subproblem).
+        family_rows = constraint.pack == PhiPack.DY_FIRST or is3d
+        if not family_rows:
             orientation_delta = None
     opts = _InnerOpts(
         no_tr_fallback,
@@ -818,11 +911,16 @@ def windowed_correct(
     phi = np.array(phi_in, dtype=np.float64, copy=True)
     ring = loc.ring
     margin = max(margin, ring)  # inset band must be fold-free margin, never < ring
-    H, W = phi.shape[1:]
+    shape = phi.shape[1:]
+    if is3d:
+        # Phase 1 of the 3D port: the round loop + window ladder only. The coarse warm
+        # start, the terminal mop and the harmonic re-seed are 2D-shaped stages (phase
+        # 2); their report fields keep their did-not-run values.
+        coarse_to_fine, mop_margin, reseed_rounds = False, 0, 0
     j0 = min_field(constraint, phi)
     orig_fold = j0 < threshold
     rep = SliceReport(folds_before=int(orig_fold.sum()), min_before=float(j0.min()))
-    touched = np.zeros((H, W), bool)  # union of every window's ENFORCED footprint
+    touched = np.zeros(shape, bool)  # union of every window's ENFORCED footprint
     t0 = time.perf_counter()
     deadline = None if time_budget_s is None else t0 + float(time_budget_s)
 
@@ -857,7 +955,7 @@ def windowed_correct(
     # Coarse-grid warm start: solve small, prolongate the correction, then run the
     # normal fine loop from the warmed field. Skipped when there is nothing to do
     # or the field is too small for the coarse problem to be a useful preview.
-    if coarse_to_fine and rep.folds_before > 0 and min(H, W) >= 4 * max(giant_tile, coarse_factor):
+    if coarse_to_fine and rep.folds_before > 0 and min(shape) >= 4 * max(giant_tile, coarse_factor):
         t_coarse = time.perf_counter()
         delta, rep_c, warm_boxes = _coarse_warm_start(
             phi,
@@ -881,8 +979,8 @@ def windowed_correct(
             ),
         )
         phi += delta
-        for fy0, fy1, fx0, fx1 in warm_boxes:  # the warm start is a move over these
-            touched[max(0, fy0 - ring) : fy1 + ring, max(0, fx0 - ring) : fx1 + ring] = True
+        for wb in warm_boxes:  # the warm start is a move over these
+            touched[_box_slices(_pad_box(wb, shape, ring))] = True
         rep.coarse_solve_s = time.perf_counter() - t_coarse
         rep.coarse_folds_before = rep_c.folds_before
         rep.coarse_folds_after = rep_c.folds_after
@@ -896,6 +994,7 @@ def windowed_correct(
 
     budget_hit = False
     prev_nfold = None
+    giant_warned = False
     for _rnd in range(max_rounds):
         if _expired():
             budget_hit = True
@@ -913,36 +1012,44 @@ def windowed_correct(
             if _expired():
                 budget_hit = True
                 break
-            fy0, fy1, fx0, fx1 = box
             # touched = the ENFORCED footprint (free box dilated by ring), not the
             # bare free box: a free pixel influences constraints up to `ring` beyond
             # the free box, so an infeasible solve could leave a violated row there.
             # Marking it touched makes any such residual count as residual, never
             # damage — so damage=0 is by construction, not merely for feasible solves.
-            touched[max(0, fy0 - ring) : fy1 + ring, max(0, fx0 - ring) : fx1 + ring] = True
-            if (fy1 - fy0) * (fx1 - fx0) > max_window_area:
-                # too big for one QP -> overlapping-tile Schwarz decomposition
+            touched[_box_slices(_pad_box(box, shape, ring))] = True
+            if _box_size(box) > max_window_area:
                 rep.giant_regions += 1
                 rep.giant_boxes.append(box)
-                giant_w0 = len(rep.windows)
-                _solve_giant_schwarz(
-                    phi,
-                    constraint,
-                    box,
-                    threshold,
-                    objective,
-                    maxiter,
-                    ring,
-                    rep,
-                    margin_delta,
-                    inner=inner,
-                    opts=opts,
-                    expired=_expired,
-                )
-                if record_history:
-                    rep.history.append(_stage_entry("giant", giant_w0))
-                _fire("giant", phi)
-                continue
+                if not is3d:
+                    # too big for one QP -> overlapping-tile Schwarz decomposition
+                    giant_w0 = len(rep.windows)
+                    _solve_giant_schwarz(
+                        phi,
+                        constraint,
+                        box,
+                        threshold,
+                        objective,
+                        maxiter,
+                        ring,
+                        rep,
+                        margin_delta,
+                        inner=inner,
+                        opts=opts,
+                        expired=_expired,
+                    )
+                    if record_history:
+                        rep.history.append(_stage_entry("giant", giant_w0))
+                    _fire("giant", phi)
+                    continue
+                if not giant_warned:
+                    # Phase 1 of the 3D port: the voxel cap is advisory — the region is
+                    # solved whole (the 3D tiler is phase 2). Warned once per call.
+                    giant_warned = True
+                    log_warning(
+                        f"windowed_correct: 3D region of {_box_size(box)} voxels exceeds "
+                        f"max_window_area={max_window_area}; solving it whole (3D tiler pending)"
+                    )
             _solve_window(
                 phi,
                 constraint,
@@ -1064,6 +1171,13 @@ def windowed_correct(
     rep.damage = int(damage_mask.sum())  # invariant: MUST be 0
     rep.damage_coords = [tuple(int(v) for v in c) for c in np.argwhere(damage_mask)[:20]]
     rep.residual_in_window = int((after_fold & touched).sum())
+    if is3d:
+        from dvfopt.jacobian.tetrahedron_sign import best_diagonal_min_volume
+
+        best_min, _ = best_diagonal_min_volume(phi)
+        rep.folds_after_zero = int((jf <= 0).sum())
+        rep.best_diag_floor_after = int((best_min <= threshold).sum())
+        rep.best_diag_floor_after_zero = int((best_min <= 0.0).sum())
     rep.n_windows = len(rep.windows)
     rep.time_s = time.perf_counter() - t0
     if record_history:
@@ -1589,7 +1703,7 @@ def _solve_window(
     ``inner`` picks the per-window solver (see
     :func:`~dvfopt.core.windowed._inners.solve_window_inner`); ``opts`` carries
     the inner knobs (:class:`_InnerOpts`)."""
-    H, W = phi.shape[1:]
+    shape = phi.shape[1:]
     opts = _InnerOpts() if opts is None else opts
     sub = build_subproblem(
         constraint,
@@ -1733,10 +1847,10 @@ def _solve_window(
             x, ok = x2, ok2
     dt = time.perf_counter() - t
     patch_out = np.asarray(sub.constraint.unflatten(x))
-    py0, py1, px0, px1 = sub.patch_box
+    psl = (slice(None), *_box_slices(sub.patch_box))
     # paste back ONLY free pixels (frozen ring is unchanged and may be shared)
     fm = sub.free_mask
-    dst = phi[:, py0:py1, px0:px1]
+    dst = phi[psl]
     dst[:, fm] = patch_out[:, fm]
 
     if ok and opts.polish and allow_grow:
@@ -1784,16 +1898,17 @@ def _solve_window(
                 psub.flat0
             ):
                 ppatch = np.asarray(psub.constraint.unflatten(px_))
-                pdst = phi[:, py0:py1, px0:px1]
+                pdst = phi[psl]
                 pdst[:, psub.free_mask] = ppatch[:, psub.free_mask]
                 rep.polish_accepted += 1
 
-    jpatch = min_field(constraint, phi[:, py0:py1, px0:px1])
+    jpatch = min_field(constraint, phi[psl])
     rec = WindowRec(
-        fy0=box[0],
-        fx0=box[2],
-        ph=py1 - py0,
-        pw=px1 - px0,
+        fy0=box[-4],
+        fx0=box[-2],
+        ph=sub.patch_box[-3] - sub.patch_box[-4],
+        pw=sub.patch_box[-1] - sub.patch_box[-2],
+        patch_box=tuple(int(v) for v in sub.patch_box),
         n_free=sub.free_idx.size,
         n_enforced=sub.n_enforced,
         inner_iters=nit,
@@ -1811,14 +1926,12 @@ def _solve_window(
 
     # grow-on-failure: if still infeasible and the window can expand, widen and retry
     if allow_grow and opts.ladder and not ok and _grow < 2:
-        fy0, fy1, fx0, fx1 = box
-        gy0, gy1 = max(0, fy0 - 4), min(H, fy1 + 4)
-        gx0, gx1 = max(0, fx0 - 4), min(W, fx1 + 4)
-        if (gy0, gy1, gx0, gx1) != box:
+        grown = _pad_box(box, shape, 4)
+        if grown != tuple(box):
             return _solve_window(
                 phi,
                 constraint,
-                (gy0, gy1, gx0, gx1),
+                grown,
                 threshold,
                 objective,
                 maxiter,

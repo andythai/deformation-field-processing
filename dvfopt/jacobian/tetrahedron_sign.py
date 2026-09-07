@@ -30,6 +30,8 @@ constraint system. See [[plot_fold_overview_3d]] for the consumer.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
 # Tet vertex tables. Each row = (i0, i1, i2, i3) where C[i] is the
@@ -896,8 +898,16 @@ def build_tet_sparse_jac(D: int, H: int, W: int):
     return jac
 
 
+@functools.lru_cache(maxsize=8)  # bounded: an entry holds ~1.2 KB of index arrays per cube
+def cached_tet_sparse_jac(D, H, W):
+    """:func:`build_tet_sparse_jac` memoised per grid shape (process-wide; pool workers
+    build their own)."""
+    return build_tet_sparse_jac(D, H, W)
+
+
 __all__ = [
     'build_tet_sparse_jac',
+    'cached_tet_sparse_jac',
     'six_tet_fold_classification',
     'six_tet_volumes_3d',
     'tet_grad_T_v',

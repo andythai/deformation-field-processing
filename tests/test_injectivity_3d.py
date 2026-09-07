@@ -66,6 +66,19 @@ class TestLinearConstraintBuilder:
         freeze[1, 1, 1] = False  # single free voxel — no free pair exists
         assert _injectivity_linear_constraint_3d((3, 3, 3), THRESHOLD, freeze) is None
 
+    def test_endpoints_filter(self):
+        """The shared row builder's two predicates: ``'both'`` is the SLSQP
+        sub-problem's (a lone free voxel keeps nothing), ``'any'`` is the windowed
+        engine's prevention rows (its six free-to-frozen axial edges survive)."""
+        from dvfopt.jacobian.monotonicity import axial_gap_matrix
+
+        fm = np.zeros((3, 3, 3), dtype=bool)
+        fm[1, 1, 1] = True
+        assert axial_gap_matrix((3, 3, 3), free=fm, endpoints='any').shape == (6, 3 * 27)
+        assert axial_gap_matrix((3, 3, 3), free=fm, endpoints='both') is None
+        with pytest.raises(ValueError, match='sideways'):
+            axial_gap_matrix((3, 3, 3), free=fm, endpoints='sideways')
+
 
 def _folded_volume():
     rng = np.random.default_rng(0)

@@ -19,6 +19,9 @@ be before every constraint it influences is enforceable with the correct
   bilinear: 1 — the 2tri cells with both diagonals (4 rows/cell); same locality.
   finite: 1 — forward-diff cell det is EXACT and depends on 3 corners; a free
            pixel's <=3 influenced cells are all in-patch once it is 1 in (like 2tri).
+  tet3d: 1 — the 6-tet family (SimplexConstraint3D): tet volumes are EXACT and a
+           free voxel's influenced cubes are its <= 8 corner cubes, all in-patch
+           once it is 1 in (the 2tri rule with one more axis).
 
 ``SimplexConstraint2DFullCoverage`` is deliberately NOT registered: its 2
 extra opposite-diagonal corner rows need their own influenced-row
@@ -37,10 +40,12 @@ from dvfopt.constraints import (
     JdetConstraint2D,
     SimplexConstraint2D,
     SimplexConstraint2DBilinear,
+    SimplexConstraint3D,
 )
 from dvfopt.core.primitives.coloring import colored_jacobian, jacobian_coloring
 from dvfopt.exceptions import IncompatibleConstraintError
 from dvfopt.jacobian.numpy_jdet import _numpy_jdet_2d
+from dvfopt.jacobian.tetrahedron_sign import cached_tet_sparse_jac, six_tet_min_volume_3d
 
 
 @dataclass(frozen=True)
@@ -49,11 +54,11 @@ class WindowLocality:
 
     ``ring`` — frozen-ring width (see the module docstring).
 
-    ``min_field`` — ``(2, H, W)`` field -> ``(H, W)`` per-location
+    ``min_field`` — ``(C, *shape)`` field -> ``shape`` per-location
     constraint value (+inf pad on cell grids).
 
-    ``influenced`` — ``(constraint, free_mask, ph, pw, borders) ->
-    (enforced_idx, jac_of)``: the constraint rows a free pixel influences
+    ``influenced`` — ``(constraint, free_mask, *patch_shape, borders) ->
+    (enforced_idx, jac_of)``: the constraint rows a free pixel/voxel influences
     AND that evaluate correctly, plus the full-patch sparse-Jacobian
     builder ``jac_of(f)`` (rows sliced by the caller).
     """
@@ -81,6 +86,15 @@ def _min_field_cells(cls, phi_dydx):
     vals = np.asarray(c.values(c.flatten(phi_dydx))).reshape(-1, H - 1, W - 1)
     out = np.full((H, W), np.inf)
     out[: H - 1, : W - 1] = vals.min(0)
+    return out
+
+
+def _min_field_tet3d(phi):
+    """Fold map of the 6-tet family: each cube's min tet volume at its (z, y, x)
+    corner voxel; the last voxel plane / row / column has no cube (+inf)."""
+    D, H, W = phi.shape[1:]
+    out = np.full((D, H, W), np.inf)
+    out[: D - 1, : H - 1, : W - 1] = six_tet_min_volume_3d(np.asarray(phi, dtype=np.float64))
     return out
 
 
@@ -204,6 +218,25 @@ def _influenced_finite(c, free_mask, ph, pw, borders):
     return enforced_idx, jac_of
 
 
+def _influenced_tet3d(c, free_mask, pd, ph, pw, borders):
+    # cube (k,i,j) is influenced iff any of its 8 corner voxels is free; tet volumes
+    # are exact so every cube evaluates correctly (no volume-border special case).
+    fm = free_mask
+    cell = np.zeros((pd - 1, ph - 1, pw - 1), bool)
+    for oz in (0, 1):
+        for oy in (0, 1):
+            for ox in (0, 1):
+                cell |= fm[oz : oz + pd - 1, oy : oy + ph - 1, ox : ox + pw - 1]
+    cell_flat = np.nonzero(cell.ravel())[0]
+    m = cell.size
+    assert 6 * m == c.n_constraints, 'six tet rows per cube'
+    enforced_idx = np.concatenate([b * m + cell_flat for b in range(6)])
+    # Cached per SHAPE, not per instance: `Constraint._cached_jac_builder` memoises on
+    # the instance and `build_subproblem` makes a fresh constraint per window. The
+    # builder returns `jac(f) -> csr (6m, 3*pd*ph*pw)`; the caller slices enforced rows.
+    return enforced_idx, cached_tet_sparse_jac(pd, ph, pw)
+
+
 # ---------------------------------------------------------------------------
 # Registry + public dispatchers
 # ---------------------------------------------------------------------------
@@ -227,6 +260,9 @@ LOCALITY: dict[type, WindowLocality] = {
         min_field=partial(_min_field_cells, FiniteJdetConstraint2D),
         influenced=_influenced_finite,
     ),
+    SimplexConstraint3D: WindowLocality(
+        ring=1, min_field=_min_field_tet3d, influenced=_influenced_tet3d
+    ),
 }
 
 
@@ -242,19 +278,22 @@ def _locality_of(constraint) -> WindowLocality:
 
 
 def min_field(constraint, phi_dydx):
-    """Per-location constraint value on the ``(H, W)`` pixel grid (folds are where
-    it is ``< threshold``).
+    """Per-location constraint value on the ``(H, W)`` pixel grid or ``(D, H, W)`` voxel grid
+    (folds are where it is ``< threshold``).
 
     - jdet: the pixel Jacobian determinant.
     - 2tri / bilinear / finite: each cell ``(i, j)``'s min row (2, 4 or 1 rows per
       cell), placed at pixel ``(i, j)``; the last pixel row/col have no cell and
       are set to ``+inf``.
+    - tet3d: each cube's min tet volume at its corner voxel on the ``(D, H, W)`` voxel grid;
+      the last plane/row/column is ``+inf``.
     """
     return _locality_of(constraint).min_field(phi_dydx)
 
 
 def pixel_fold_mask(constraint, phi_dydx, threshold):
-    """Boolean ``(H, W)`` pixel mask of folds (constraint value < threshold)."""
+    """Boolean pixel/voxel mask of the field's spatial shape, marking folds
+    (constraint value < threshold)."""
     return min_field(constraint, phi_dydx) < threshold
 
 
