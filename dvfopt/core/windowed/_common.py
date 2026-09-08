@@ -103,6 +103,9 @@ class _InnerOpts:
         True  # False -> one attempt per window: no retries, no grow (the mop's big windows)
     )
     orientation_rows: str = 'full'  # 'full' (edge + anti-diagonal rows) | 'edges' (edge rows only)
+    giant_tile_3d: int = (
+        16  # the 3D tile knob; on a 3D field `giant_tile` is RESOLVED to it at entry
+    )
 
 
 @dataclass(frozen=True)
@@ -501,31 +504,31 @@ class SliceReport:
 
 
 def _restrict(phi, factor):
-    """Box-average ``factor`` x ``factor`` blocks of a ``(2, H, W)`` field.
+    """Box-average ``factor``-blocks of a ``(C, *shape)`` field, any rank.
 
-    Displacements are divided by ``factor`` so they stay in COARSE pixel units —
+    Displacements are divided by ``factor`` so they stay in COARSE grid units —
     the coarse field is then an ordinary deformation field on its own grid and the
     same constraint/threshold means the same thing there. A trailing partial block
-    (odd ``H``/``W``) is dropped.
+    along any axis is dropped.
     """
-    hc, wc = (d // factor for d in phi.shape[1:])
-    trimmed = phi[:, : factor * hc, : factor * wc]
-    return trimmed.reshape(2, hc, factor, wc, factor).mean(axis=(2, 4)) / factor
+    coarse = [d // factor for d in phi.shape[1:]]
+    trimmed = phi[(slice(None), *(slice(0, factor * n) for n in coarse))]
+    blocked = trimmed.reshape(phi.shape[0], *(v for n in coarse for v in (n, factor)))
+    return blocked.mean(axis=tuple(range(2, 2 * len(coarse) + 1, 2))) / factor
 
 
 def _prolongate(delta_c, shape, factor):
-    """Bilinear ``factor`` x upsample of a coarse-grid CORRECTION back to ``shape``.
+    """Multilinear ``factor`` x upsample of a coarse-grid CORRECTION back to ``shape``.
 
     Displacements are multiplied by ``factor`` (the inverse of :func:`_restrict`'s
-    rescale). Rows/cols the integer factor cannot cover (odd ``H``/``W``) stay
+    rescale). Planes/rows/cols the integer factor cannot cover (odd sizes) stay
     zero — the fine solve handles that strip itself.
     """
-    h, w = shape
-    out = np.zeros((2, h, w))
-    for c in range(2):
+    out = np.zeros((delta_c.shape[0], *shape))
+    for c in range(delta_c.shape[0]):
         up = ndimage.zoom(delta_c[c] * factor, factor, order=1)
-        hh, ww = min(h, up.shape[0]), min(w, up.shape[1])
-        out[c, :hh, :ww] = up[:hh, :ww]
+        keep = tuple(slice(0, min(n, u)) for n, u in zip(shape, up.shape))
+        out[(c, *keep)] = up[keep]
     return out
 
 
@@ -545,7 +548,7 @@ def _coarse_warm_start(phi, constraint, objective, threshold, factor, margin, ri
     neighbourhood, not damage to untouched area (measured: raw B0039 z16 under a
     40 s budget booked 3 such folds as damage before this).
 
-    Why it pays: the coarse solve is ~1/factor**2 the work and lands the fine
+    Why it pays: the coarse solve is ~1/factor**ndim the work and lands the fine
     windows near a solution, so their SQP loops converge in far fewer iterations.
     Raw B0039 z16 (3890 simplex folds, bilinear rows, objective ``none``,
     maxiter 600): 205 s / 909 SQP iterations — 841 fine plus a 16 s, 68-iteration
@@ -566,8 +569,8 @@ def _coarse_warm_start(phi, constraint, objective, threshold, factor, margin, ri
     allow = np.zeros(phi.shape[1:], bool)
     fine_mask = pixel_fold_mask(constraint, phi, threshold)
     boxes = find_windows(fine_mask, margin, ring)
-    for fy0, fy1, fx0, fx1 in boxes:
-        allow[fy0:fy1, fx0:fx1] = True
+    for box in boxes:
+        allow[_box_slices(box)] = True
     delta[:, ~allow] = 0.0
     return delta, rep_c, boxes
 
@@ -585,6 +588,7 @@ def windowed_correct(
     margin_delta=1e-3,
     max_window_area=3000,
     mop_margin=25,
+    mop_margin_3d=6,
     no_tr_fallback=True,
     fallback_maxiter=200,
     qp_max_iter=1000,
@@ -593,6 +597,7 @@ def windowed_correct(
     giant_max_sweeps=8,
     giant_tile_fit=True,
     giant_workers=0,
+    giant_tile_3d=16,
     qp_backend='hybrid',
     ip_cold=True,
     ip_after_admm_iters=800,
@@ -621,10 +626,8 @@ def windowed_correct(
 ):
     """Correct a full ``(2, H, W)`` slice — or, with
     :class:`~dvfopt.constraints.SimplexConstraint3D`, a ``(3, D, H, W)`` volume
-    (3D port, phase 1: round loop + window ladder, ``'tr'`` step rule, 3D edge
-    rows; the coarse warm start, mop and re-seed are skipped, the giant cap is
-    advisory, ``reanchor`` / ``polish`` raise) — by solving one small window per
-    fold cluster. Returns ``(phi_out, SliceReport)``.
+    (3D: every stage runs (phase 2 of the 3D port)) — by solving one small
+    window per fold cluster. Returns ``(phi_out, SliceReport)``.
 
     ``constraint`` is a registered constraint instance
     (:class:`~dvfopt.constraints.JdetConstraint2D`,
@@ -652,6 +655,8 @@ def windowed_correct(
     the plateau is boundary-stuck folds inside the giants that a small window's
     tight frozen boundary can't clear but a large frozen-exterior window can (the
     analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0`` disables.
+    ``mop_margin_3d`` (default 6) is the 3D margin — a residual cluster plus 6 per
+    side is a ~13-17³ window, under the cap.
 
     Four knobs tune the inner solves (all ``isqp``-only, defaults measured on
     the hard B0039 crops):
@@ -686,6 +691,9 @@ def windowed_correct(
     ``giant_tile=64`` ran 362 s / 22 windows / 1 round / no mop vs 685 s /
     264 windows / 3 rounds at 32 — 1.9x faster, zero simplex folds and zero
     damage either way, and a *smaller* move (L2 316 vs 404). 64 is the default.
+    On a 3D field the tile is ``giant_tile_3d`` (default 16 per axis: 16³ voxels
+    is the 2D 64² tile by count; phase 1 measured 11 s per SQP iteration at 17³
+    and 69 s at 25³, so the tile must stay near 16).
 
     ``tr_delta`` (2.0) / ``tr_max`` (16.0) size the ``isqp`` inner's trust
     region — initial radius and cap, in grid units. The default is what every
@@ -889,7 +897,7 @@ def windowed_correct(
         fallback_maxiter,
         qp_max_iter,
         qp_max_iter_fallback,
-        giant_tile,
+        giant_tile_3d if is3d else giant_tile,
         giant_max_sweeps,
         giant_tile_fit,
         qp_backend,
@@ -906,6 +914,7 @@ def windowed_correct(
         giant_workers=giant_workers,
         polish=polish,
         polish_maxiter=polish_maxiter,
+        giant_tile_3d=giant_tile_3d,
     )
     objective = L2Objective() if objective is None else objective
     phi = np.array(phi_in, dtype=np.float64, copy=True)
@@ -913,10 +922,7 @@ def windowed_correct(
     margin = max(margin, ring)  # inset band must be fold-free margin, never < ring
     shape = phi.shape[1:]
     if is3d:
-        # Phase 1 of the 3D port: the round loop + window ladder only. The coarse warm
-        # start, the terminal mop and the harmonic re-seed are 2D-shaped stages (phase
-        # 2); their report fields keep their did-not-run values.
-        coarse_to_fine, mop_margin, reseed_rounds = False, 0, 0
+        mop_margin = mop_margin_3d  # the 3D mop margin (a cluster + 6 per side stays under the cap)
     j0 = min_field(constraint, phi)
     orig_fold = j0 < threshold
     rep = SliceReport(folds_before=int(orig_fold.sum()), min_before=float(j0.min()))
@@ -955,7 +961,11 @@ def windowed_correct(
     # Coarse-grid warm start: solve small, prolongate the correction, then run the
     # normal fine loop from the warmed field. Skipped when there is nothing to do
     # or the field is too small for the coarse problem to be a useful preview.
-    if coarse_to_fine and rep.folds_before > 0 and min(shape) >= 4 * max(giant_tile, coarse_factor):
+    if (
+        coarse_to_fine
+        and rep.folds_before > 0
+        and min(shape) >= 4 * max(opts.giant_tile, coarse_factor)
+    ):
         t_coarse = time.perf_counter()
         delta, rep_c, warm_boxes = _coarse_warm_start(
             phi,
@@ -973,6 +983,7 @@ def windowed_correct(
                 margin_delta=margin_delta,
                 max_window_area=max_window_area,
                 mop_margin=mop_margin,
+                mop_margin_3d=mop_margin_3d,
                 time_budget_s=time_budget_s,
                 verbose=verbose,
                 **_engine_kwargs(opts),
@@ -1093,6 +1104,7 @@ def windowed_correct(
                 margin_delta=margin_delta,
                 max_window_area=max_window_area,
                 mop_margin=mop_margin,
+                mop_margin_3d=mop_margin_3d,
                 verbose=verbose,
                 **_engine_kwargs(opts),
             ),
