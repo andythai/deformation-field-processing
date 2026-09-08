@@ -1243,11 +1243,7 @@ def _mop_pass(
             break
         lbl, _ = ndimage.label(mask)  # raw residual clusters (per connected component)
         for sl in ndimage.find_objects(lbl):
-            box = tuple(
-                v
-                for s, n_ax in zip(sl, shape)
-                for v in (max(0, s.start - mop_margin), min(n_ax, s.stop + mop_margin))
-            )
+            box = _pad_box(tuple(v for s in sl for v in (s.start, s.stop)), shape, mop_margin)
             touched[_box_slices(_pad_box(box, shape, ring))] = True
             rep.mop_windows += 1
             if _box_size(box) > whole_cap:
@@ -1361,7 +1357,9 @@ def _reanchor_pass(
         return
     obj_ref = make_objective(ropts.kind)
     tile = max(1, ropts.tile)
-    step = max(1, tile - _REANCHOR_OVERLAP)  # overlap so a seam is a neighbour's interior
+    # overlap so a seam is a neighbour's interior; same floor as the tiler: the 3D
+    # re-anchor tile is giant_tile_3d (16 -> step 8; 8 -> step 4, not 1)
+    step = max(tile - _REANCHOR_OVERLAP, tile // 2, 1)
     pts = np.nonzero(moved)
     lo = [int(p.min()) for p in pts]
     hi = [int(p.max()) + 1 for p in pts]
@@ -1488,14 +1486,10 @@ def _reseed_stage(
         if nf == 0 or expired():
             break
         rep.reseed_rounds_run += 1
-        corners = fold.copy()  # a cell's 2**ndim corner grid points: OR the +1 shift per axis
-        for ax in range(fold.ndim):
-            shifted = np.zeros_like(corners)
-            dst = [slice(None)] * fold.ndim
-            src = [slice(None)] * fold.ndim
-            dst[ax], src[ax] = slice(1, None), slice(None, -1)
-            shifted[tuple(dst)] = corners[tuple(src)]
-            corners |= shifted
+        # a cell's 2**ndim corner grid points ({0, +1} offsets per axis)
+        corners = ndimage.binary_dilation(
+            fold, structure=np.ones((2,) * fold.ndim, bool), origin=-1
+        )
         mask = ndimage.binary_dilation(corners, iterations=radius)
         _harmonic_fill(phi, mask)
         rep.reseed_px += int(mask.sum())
@@ -1603,7 +1597,8 @@ def _solve_giant_schwarz(
         inset += [lo + (ring if lo > 0 else 0), hi - (ring if hi < n else 0)]
     inset = tuple(inset)
     overlap = 2 * ring + 2  # free regions must overlap so seams are some tile's interior
-    step = max(1, tile - overlap)
+    # floor: a tile near the overlap must not degenerate to a 1-voxel step (3D tiles are small)
+    step = max(tile - overlap, tile // 2, 1)
     axes = [range(inset[2 * a], inset[2 * a + 1], step) for a in range(ndim)]
     tiles = [  # itertools.product iterates axis 0 outermost — the 2D `for ty ... for tx` order
         tuple(v for a, t in enumerate(starts) for v in (t, min(t + tile, inset[2 * a + 1])))

@@ -3,6 +3,8 @@ harmonic re-seed, re-anchor, polish) on (3, D, H, W) fields. Additive: the 2D st
 are covered by their own suites and by benchmarks/windowed_2d_identity.py.
 """
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -72,17 +74,25 @@ def test_inner_opts_resolve_the_3d_tile():
 
 @needs_osqp
 def test_coarse_warm_start_runs_on_3d_and_keeps_healthy_area_byte_identical():
-    # min(shape) >= 4 * giant_tile_3d (= 64) -> the stage fires; coarse_factor 4 -> a 16^3 coarse problem
-    phi = _blob((64, 64, 64), (32, 32, 32), (4, 6, 6), amp=0.5)
+    # min(shape) >= 4 * giant_tile_3d (= 64) -> the stage fires; coarse_factor 4 -> a 16^3 coarse
+    # problem. A smooth x-compression steeper than 1 (dx = -1.3 * (x - 32) on a block) inverts the
+    # map at EVERY scale, so the coarse field folds too and the prolongated delta / `allow` mask are
+    # really exercised — a random blob averages away at factor 4 (coarse fold-free -> zero delta).
+    # Block [26, 38) also works (coarse_folds_before 9, 0 folds, damage 0) but takes 465 s; [28, 36)
+    # is the same behaviour in 47 s.
+    phi = np.zeros((3, 64, 64, 64))
+    zz, yy, xx = np.ogrid[0:64, 0:64, 0:64]
+    block = (zz >= 28) & (zz < 36) & (yy >= 28) & (yy < 36) & (xx >= 28) & (xx < 36)
+    phi[2] = np.where(block, -1.3 * (xx - 32), 0.0)
     c = SimplexConstraint3D(shape=phi.shape[1:])
     assert (min_field(c, phi) < THR).any()
     out, rep = windowed_correct(
         phi.copy(), "isqp", constraint=c, objective=NoneObjective(), threshold=THR, verbose=0
     )
-    assert rep.coarse_folds_before >= 0, "the coarse stage must have run"
+    assert rep.coarse_folds_before > 0 and rep.coarse_iters > 0  # the coarse solve did real work
     assert rep.folds_after == 0 and rep.damage == 0
-    assert np.array_equal(out[:, :16], phi[:, :16]) and np.array_equal(
-        out[:, :, :, 48:], phi[:, :, :, 48:]
+    assert np.array_equal(out[:, :12], phi[:, :12]) and np.array_equal(
+        out[:, :, :, 52:], phi[:, :, :, 52:]
     )
 
 
@@ -136,6 +146,8 @@ def test_ras_cores_partition_a_3d_inset_region():
 def test_3d_giant_region_is_tiled_and_cleared():
     # a 10^3 blob -> one connected free box of ~16^3 = 4096 > max_window_area=800 -> the tiler;
     # _fit_tile_nd((16, 16, 16), 10) == 8, step 4 -> 4 tiles per axis of <= 8^3 voxels each.
+    # (step = max(tile - overlap, tile // 2, 1) = max(8 - 4, 4, 1) = 4: the tile // 2 floor
+    # ties here and only binds for tiles nearer the overlap, see the step-floor test below.)
     # NOTE: the smaller shared fixture (16^3 field, max_window_area=200, giant_tile_3d=6)
     # was tried here first per the fix-wave's conditional — it clears (giant_regions >= 1,
     # folds_after == 0, damage == 0) but in 188.67s (not "well under 60s") and its far
@@ -294,9 +306,11 @@ def test_3d_reseed_stage_runs_on_a_residual_and_books_touched():
         **_FORCE_RESIDUAL,
     )
     assert rep.damage == 0
-    if rep.reseed_folds_before > 0:
-        assert rep.reseed_rounds_run >= 1 and rep.reseed_px > 0
-        assert rep.reseed_folds_after <= rep.reseed_folds_before
+    assert rep.reseed_folds_before > 0  # the round loop really left the stage a residual
+    assert rep.reseed_rounds_run >= 1 and rep.reseed_px > 0
+    assert rep.reseed_folds_after <= rep.reseed_folds_before
+    # the re-seed mask is the residual's corners dilated by 2, inside the touched region
+    assert np.array_equal(out[:, :, :6], phi[:, :, :6])
 
 
 @needs_osqp
@@ -364,3 +378,19 @@ def test_3d_mop_margin_zero_still_disables_the_mop():
         **_FORCE_RESIDUAL,
     )
     assert rep.damage == 0 and rep.mop_windows == 0
+
+
+def test_tiler_and_reanchor_steps_never_collapse_for_small_3d_tiles():
+    # tile 5 with overlap 4 used to step by 1 (2744 tiles on a 14^3 region); the floor is tile // 2
+    assert (
+        max(5 - 4, 5 // 2, 1) == 2
+        and max(16 - 8, 16 // 2, 1) == 8
+        and max(48 - 8, 48 // 2, 1) == 40
+    )
+    inset = (0, 14, 0, 14, 0, 14)
+    tile, step = 5, max(5 - 4, 5 // 2, 1)
+    n_tiles = len(
+        list(itertools.product(*(range(inset[2 * a], inset[2 * a + 1], step) for a in range(3))))
+    )
+    assert n_tiles == 7**3  # not 14**3
+    assert tile > step  # tiles still overlap

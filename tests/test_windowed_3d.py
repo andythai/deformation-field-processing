@@ -358,8 +358,13 @@ def test_3d_solver_composition_and_string_recipe():
 @needs_osqp
 def test_3d_auto_objective_recipe_does_not_inject_polish():
     """``objective='auto'`` asks for the per-window ``polish='l2'`` on mild fields; that
-    is a 2D-measured recipe the 3D engine refuses, so the injection is dim-gated."""
+    is a 2D-measured recipe the 3D engine refuses, so the resolver gates it on ``dim``."""
     from dvfopt import correct_dvf
+    from dvfopt.solver import resolve_auto_objective
+
+    # the single source of truth: same objective either way, the polish only in 2D
+    assert resolve_auto_objective(10, -1.0, dim=3)[1] is False
+    assert resolve_auto_objective(10, -1.0) == ("none", True)  # 2D counterpart, unchanged
 
     phi = _planted_3d((8, 14, 14), amp=0.5)
     res = correct_dvf(phi, constraint="simplex_3d", strategy="isqp_windowed", objective="auto")

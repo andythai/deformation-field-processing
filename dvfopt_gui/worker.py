@@ -666,7 +666,9 @@ class SolverWorker(QtCore.QThread):
         from dvfopt.solver import resolve_auto_objective
 
         t = np.asarray(constraint.values(constraint.flatten(self._phi_for_auto())))
-        label, wants_polish = resolve_auto_objective(int((t <= 0).sum()), float(t.min()))
+        label, wants_polish = resolve_auto_objective(
+            int((t <= 0).sum()), float(t.min()), dim=getattr(constraint, 'dim', 2)
+        )
         self._resolved_auto_objective = label
         if (
             wants_polish
