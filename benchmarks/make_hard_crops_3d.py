@@ -4,9 +4,11 @@ Four 24^3 crops (offsets from a stride-12 scan of the raw field, 2026-09-07):
 twist (min tet volume -13.4, sparse), cluster (25 % of cubes below threshold),
 sliver (880 cubes in [-0.001, 0.01), 1.8 % negative), moderate (10 % below).
 ``--build-only`` cuts them into data/dvfs/crops_3d/ (gitignored). Without it the
-script also runs ``windowed_correct`` on every crop under the configs given by
-``--cfg`` (default: l2_rows, the engine default) and writes crops_<name>_<cfg>.json +
-crops.md to benchmarks/output/windowed_3d/ — the reference table of the 3D port's
+script also runs ``windowed_correct`` on every crop under the config given by
+``--cfg`` (default: l2_rows, the engine default) and the tiler/mop knobs
+``--giant-tile-3d`` / ``--mop-margin-3d`` (defaults 16 / 6, the engine defaults),
+writing crops_<name>_<cfg>_t{tile}_m{margin}.json + crops.md to
+benchmarks/output/windowed_3d/ — the reference table of the 3D port's
 phase 2 (0 folds / damage 0 is the gate; wall and L2 move are the reference).
 """
 
@@ -163,7 +165,8 @@ def main():
     a = ap.parse_args()
     print(f"dvfopt from {dvfopt.__file__}", flush=True)
     os.makedirs(OUT, exist_ok=True)
-    if not os.path.isdir(OUT_CROPS) or a.build_only:
+    crops_built = all(os.path.isfile(os.path.join(OUT_CROPS, f"{name}.npy")) for name in CROPS)
+    if not crops_built or a.build_only:
         build()
     if a.build_only:
         return

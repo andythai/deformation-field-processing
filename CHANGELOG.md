@@ -11,14 +11,20 @@ follows [Semantic Versioning](https://semver.org/).
 - The giant-region Schwarz tiler (serial sweeps and `giant_workers` RAS), the coarse-grid warm start, the terminal mop, the harmonic re-seed, the re-anchor stage and the per-window polish are dimension-agnostic (`itertools.product` over per-axis ranges through the phase-1 box helpers; byte-identical in 2D — `benchmarks/windowed_2d_identity.py`: 21 cases, `IDENTITY PASS`). Two 3D defaults, sized from phase 1's cost curve: `giant_tile_3d=16` per axis (16³ voxels is the 2D 64² tile by count) and `mop_margin_3d=6`; the 3D re-anchor tile is `giant_tile_3d`. The phase-1 gates (advisory cap, skipped stages, refused `reanchor` / `polish`) are gone.
 - Measured (`benchmarks/make_hard_crops_3d.py`, four 24³ crops of the raw B0039 field, threshold 0.01, `'tr'`):
 
-  The crop table exercises the tiler on real data (every measured crop clears in one round through the tiler with no mop / re-seed / coarse stage firing); the mop, re-seed, re-anchor and polish have unit-test evidence on 3D and the rows-off arm (`--cfg l2_norows`) is the real-data input that reaches the mop and re-seed.
+  twist, sliver and moderate clear in one round through the tiler (no mop / re-seed); `cluster` (3038 folds, 25% of its cubes) takes 2 rounds, 94 windows, a 2-window mop and one re-seed round (8250 s, L2 90.4) — the mop and re-seed fire on real data under the default config there. The rows-off arm on moderate (`l2_norows`) reaches 0 folds too but at 2 rounds / 67 windows / mop 3 / re-seed 1 / 2512 SQP iterations / 3640 s vs 672 / 878 s with the rows: the edge rows are worth 4x in wall on 3D real data, as in phase 1. `none_rows` on twist: 0 folds, 777 iterations / 942 s / L2 62.8 vs the L2 default's 468 / 576 s / 27.0 — in 3D the in-solve L2 is both faster and closer (unlike 2D, where `none` is the fastest formulation). The `giant_tile_3d` A/B on moderate: 12 and 16 both fit to a 12-voxel tile on the 24³ crop's region (`_fit_tile_nd`), hence identical runs; 20 fits to 15 — fewer SQP iterations (454 vs 672) and a smaller move (54.3 vs 58.7) but 1.7x the wall (1520 vs 878 s: the per-iteration QP cost grows faster than the iteration count falls), so 16 stays the default. The coarse warm start never fires on a 24³ crop (`min(shape) < 4 * giant_tile_3d`) — its 3D value is unmeasured (phase 3). The per-window polish (`dvfopt/core/windowed/_common.py`) is gated by `allow_grow`, which defaults `True` for round-loop windows (`_solve_window` at line 1055) and mop windows (line 1272) but is forced `False` for every giant-tile Schwarz sub-window (`_solve_giant_schwarz` calls `_solve_window(..., allow_grow=False)` at lines 1668/1721): `if ok and opts.polish and allow_grow:` (line 1900) means the polish never fires on a giant tile, only on windows the round loop (or the mop) solves directly.
 
   | case | cfg | giant_tile_3d | mop_margin_3d | folds_in | floor_in | folds_out | floor_out | min_out | damage | rounds | n_windows | giant_regions | mop_windows | reseed_rounds_run | sqp_iters | wall_s | l2_move |
   |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
   | sliver | l2_rows | 16 | 6 | 1094 | 1071 | 0 | 0 | 0.0110 | 0 | 1 | 27 | 1 | 0 | 0 | 699 | 633 | 23.3 |
   | twist | l2_rows | 16 | 6 | 403 | 352 | 0 | 0 | 0.0109 | 0 | 1 | 29 | 1 | 0 | 0 | 468 | 576 | 27.0 |
+  | cluster | l2_rows | 16 | 6 | 3038 | 2705 | 0 | 0 | 0.0110 | 0 | 2 | 94 | 1 | 2 | 1 | 2818 | 8250 | 90.4 |
+  | moderate | l2_rows | 16 | 6 | 1217 | 1045 | 0 | 0 | 0.0109 | 0 | 1 | 27 | 1 | 0 | 0 | 672 | 878 | 58.7 |
+  | twist | none_rows | 16 | 6 | 403 | 352 | 0 | 0 | 0.0110 | 0 | 1 | 29 | 1 | 0 | 0 | 777 | 942 | 62.8 |
+  | moderate | l2_norows | 16 | 6 | 1217 | 1045 | 0 | 0 | 0.0110 | 0 | 2 | 67 | 1 | 3 | 1 | 2512 | 3640 | 64.3 |
+  | moderate | l2_rows | 12 | 6 | 1217 | 1045 | 0 | 0 | 0.0109 | 0 | 1 | 27 | 1 | 0 | 0 | 672 | 913 | 58.7 |
+  | moderate | l2_rows | 20 | 6 | 1217 | 1045 | 0 | 0 | 0.0108 | 0 | 1 | 27 | 1 | 0 | 0 | 454 | 1520 | 54.3 |
 
-  <!-- remaining crop rows (cluster, moderate; none_rows; the giant_tile_3d A/B): appended by the orchestrator when the measurement chain ends -->
+  `folds_out_zero` / `floor_out_zero` are 0 on every row above. The phase-1 16³ B0039 sub-volume under the phase-2 defaults: __SUBVOL16_P2__.
 
 ### Added — 3D windowed engine, phase 1: family plumbing + certificate (`SimplexConstraint3D` in `ISQPWindowedStrategy`)
 

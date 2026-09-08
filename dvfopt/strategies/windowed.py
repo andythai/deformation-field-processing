@@ -81,8 +81,8 @@ class WindowedWrapperStrategy(Strategy):
         Margin for the terminal large-window mop pass (0 disables; 3D:
         the margin is ``mop_margin_3d``; ``mop_margin=0`` still disables).
     mop_margin_3d : int
-        Margin of the terminal mop on 3D fields (6; 25 would be a 55³
-        window).
+        Margin of the terminal mop on 3D fields (6; 25 would be a 51³
+        window: 1 + 2 * 25 = 51).
     time_budget_s : float, optional
         Wall-clock budget, checked at round/window boundaries.
     no_tr_fallback : bool

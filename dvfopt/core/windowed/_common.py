@@ -658,9 +658,10 @@ def windowed_correct(
     analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0`` disables
     (3D: the margin is ``mop_margin_3d``; ``mop_margin=0`` still disables).
     ``mop_margin_3d`` (default 6) is the 3D margin — a residual cluster plus 6 per
-    side is a ~13-17³ window — above ``max_window_area`` (so it is solved as ONE
-    attempt, ``ladder=False``, like a big 2D mop window) but under the mop's own
-    ``whole_cap`` of 4x that, so it is not tiled.
+    side is a ~13-17³ window (2.2k-4.9k voxels, around ``max_window_area`` = 3000:
+    the bigger ones are solved as ONE attempt, ``ladder=False``, like a big 2D mop
+    window) and always under the mop's own ``whole_cap`` of 4x that (12000 ≈ 23³),
+    so it is not tiled.
 
     Four knobs tune the inner solves (all ``isqp``-only, defaults measured on
     the hard B0039 crops):
