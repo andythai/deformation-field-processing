@@ -476,8 +476,9 @@ def correct_dvf(
             objective_label=(objective if isinstance(objective, str) else objective.label),
         )
     # `c` is in scope whenever _wants_polish is True (it is only set under
-    # objective='auto'); the per-window polish is a 2D-measured recipe and the 3D
-    # engine refuses it (phase 2), so gate the injection on the constraint's dim.
+    # objective='auto'); the per-window polish is a 2D-measured recipe, the 3D
+    # polish is unmeasured, so the auto path injects it on 2D constraints only
+    # (phase 3 measures it).
     if _wants_polish and getattr(c, 'dim', 2) == 2:
         if strategy == 'isqp_windowed' and 'polish' not in strategy_kwargs:
             strategy_kwargs = dict(strategy_kwargs, polish='l2')

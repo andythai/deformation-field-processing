@@ -307,7 +307,8 @@ def test_3d_reanchor_reduces_the_move_and_keeps_zero_folds(kind):
     )
     assert rep.folds_after == 0 and rep.damage == 0
     assert rep.reanchor_sweeps_run >= 1 and rep.reanchor_tiles >= 1
-    assert rep.reanchor_l2_after <= rep.reanchor_l2_before
+    assert rep.reanchor_accepted > 0
+    assert rep.reanchor_l2_after < rep.reanchor_l2_before
     moved0 = np.any(base != phi, axis=0)
     assert not np.any(out != phi, axis=0)[~moved0].any()  # only voxels the main solve moved
 
@@ -325,4 +326,5 @@ def test_3d_polish_runs_and_keeps_zero_folds():
         verbose=0,
         polish="l2",
     )
-    assert rep.folds_after == 0 and rep.damage == 0 and rep.polish_windows >= 1
+    assert rep.folds_after == 0 and rep.damage == 0
+    assert rep.polish_windows >= 1 and rep.polish_accepted > 0
