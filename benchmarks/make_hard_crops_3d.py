@@ -6,7 +6,7 @@ sliver (880 cubes in [-0.001, 0.01), 1.8 % negative), moderate (10 % below).
 ``--build-only`` cuts them into data/dvfs/crops_3d/ (gitignored). Without it the
 script also runs ``windowed_correct`` on every crop under the config given by
 ``--cfg`` (default: l2_rows, the engine default) and the tiler/mop knobs
-``--giant-tile-3d`` / ``--mop-margin-3d`` (defaults 16 / 6, the engine defaults),
+``--giant-tile`` / ``--mop-margin`` (defaults 16 / 6, the engine defaults),
 writing crops_<name>_<cfg>_t{tile}_m{margin}.json + crops.md to
 benchmarks/output/windowed_3d/ — the reference table of the 3D port's
 phase 2 (0 folds / damage 0 is the gate; wall and L2 move are the reference).
@@ -64,7 +64,7 @@ def build():
         )
 
 
-def run(name, cfg, giant_tile_3d, mop_margin_3d):
+def run(name, cfg, giant_tile, mop_margin):
     obj_cls, od = CFGS[cfg]
     phi = np.load(os.path.join(OUT_CROPS, f"{name}.npy"))
     c = SimplexConstraint3D(shape=phi.shape[1:])
@@ -78,8 +78,8 @@ def run(name, cfg, giant_tile_3d, mop_margin_3d):
         threshold=THR,
         orientation_delta=od,
         orientation_rows="edges",
-        giant_tile_3d=giant_tile_3d,
-        mop_margin_3d=mop_margin_3d,
+        giant_tile=giant_tile,
+        mop_margin=mop_margin,
         verbose=0,
     )
     wall = time.perf_counter() - t
@@ -87,8 +87,8 @@ def run(name, cfg, giant_tile_3d, mop_margin_3d):
     rec = dict(
         case=name,
         cfg=cfg,
-        giant_tile_3d=giant_tile_3d,
-        mop_margin_3d=mop_margin_3d,
+        giant_tile=giant_tile,
+        mop_margin=mop_margin,
         folds_in=int((mv0 < THR).sum()),
         floor_in=int(n_neg_best_diagonal(phi, THR)),
         folds_out=int(rep.folds_after),
@@ -109,9 +109,7 @@ def run(name, cfg, giant_tile_3d, mop_margin_3d):
         l2_move=float(np.linalg.norm(move.ravel())),
         l1_move=float(np.abs(move).sum()),
     )
-    with open(
-        os.path.join(OUT, f"crops_{name}_{cfg}_t{giant_tile_3d}_m{mop_margin_3d}.json"), "w"
-    ) as fh:
+    with open(os.path.join(OUT, f"crops_{name}_{cfg}_t{giant_tile}_m{mop_margin}.json"), "w") as fh:
         json.dump(rec, fh, indent=1)
     print(json.dumps(rec), flush=True)
     assert rec["damage"] == 0, rec
@@ -127,8 +125,8 @@ def table():
     cols = [
         "case",
         "cfg",
-        "giant_tile_3d",
-        "mop_margin_3d",
+        "giant_tile",
+        "mop_margin",
         "folds_in",
         "floor_in",
         "folds_out",
@@ -160,8 +158,8 @@ def main():
     ap.add_argument("--build-only", action="store_true")
     ap.add_argument("--case", choices=list(CROPS))
     ap.add_argument("--cfg", choices=list(CFGS), default="l2_rows")
-    ap.add_argument("--giant-tile-3d", type=int, default=16)
-    ap.add_argument("--mop-margin-3d", type=int, default=6)
+    ap.add_argument("--giant-tile", type=int, default=16)
+    ap.add_argument("--mop-margin", type=int, default=6)
     a = ap.parse_args()
     print(f"dvfopt from {dvfopt.__file__}", flush=True)
     os.makedirs(OUT, exist_ok=True)
@@ -173,7 +171,7 @@ def main():
     for name in CROPS:
         if a.case and name != a.case:
             continue
-        run(name, a.cfg, a.giant_tile_3d, a.mop_margin_3d)
+        run(name, a.cfg, a.giant_tile, a.mop_margin)
     table()
 
 

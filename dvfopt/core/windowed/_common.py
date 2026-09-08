@@ -104,9 +104,6 @@ class _InnerOpts:
         True  # False -> one attempt per window: no retries, no grow (the mop's big windows)
     )
     orientation_rows: str = 'full'  # 'full' (edge + anti-diagonal rows) | 'edges' (edge rows only)
-    giant_tile_3d: int = (
-        16  # the 3D tile knob; on a 3D field `giant_tile` is RESOLVED to it at entry
-    )
     line_model: str = 'quadratic'  # 'cubic' on a 3D field: a 6-tet row is cubic along a line
 
 
@@ -122,12 +119,43 @@ class _ReanchorOpts:
     maxiter: int = 60
     sweeps: int = 3
     tile: int = 48
+    overlap: int = 8  # tile overlap; resolved per dimension at entry (`_REANCHOR_OVERLAP`)
 
 
 _REANCHOR_KINDS = ('none', 'l2', 'l1')
 _REANCHOR_MIN_GAIN = 0.01  # stop sweeping once a sweep buys < 1% of the L2 move
 _REANCHOR_TOL = 1e-9  # accepted rows must clear `threshold` by this much
-_REANCHOR_OVERLAP = 8  # tile overlap, in px (48 stepped by 40 in the prototype)
+_REANCHOR_OVERLAP = 8  # 2D re-anchor tile overlap, in px (48 stepped by 40 in the prototype)
+
+DEFAULTS_BY_DIM: dict[str, dict[int, int]] = {
+    # knob -> {dim: default}. The 2D column IS the engine's signature default (never
+    # change it here without changing the signature); the 3D column is the phase-3
+    # measured table (CHANGELOG "3D windowed engine, phase 3"). A knob a caller leaves
+    # at its 2D default takes the column for the field's dimension; any other explicit
+    # value is honoured in every dimension — so `giant_tile=12` works on a 3D field, and
+    # `mop_margin=0` still disables the mop. (`giant_tile=64` on a 3D field therefore
+    # reads as "the 3D default"; pass 65 if you really want a 64-voxel tile.)
+    'giant_tile': {2: 64, 3: 16},  # 16^3 voxels ~= the 2D 64^2 tile by count
+    'mop_margin': {2: 25, 3: 6},  # residual + 6/side -> a 13-17^3 mop window
+    'max_window_area': {2: 3000, 3: 5000},  # phase-3 Task 2 ruling
+    'reanchor_tile': {2: 48, 3: 16},
+    # module-internal, not a kwarg: the 2D column is a LITERAL 8 so that patching
+    # `_REANCHOR_OVERLAP` (benchmarks/windowed_3d_sweep.py) reads as "not at the 2D
+    # default" and is honoured on 3D. The entry block passes the constant in.
+    'reanchor_overlap': {2: 8, 3: 8},  # phase-3 Task 3 ruling
+    'qp_max_iter': {2: 1000, 3: 1000},  # phase-3 Task 3 ruling
+    'ip_after_admm_iters': {2: 800, 3: 800},  # phase-3 Task 3 ruling
+}
+
+
+def resolve_dim_defaults(dim, **knobs):
+    """``knobs`` with every entry that sits at its 2D default replaced by the
+    :data:`DEFAULTS_BY_DIM` column for ``dim`` (the identity for ``dim == 2``)."""
+    out = dict(knobs)
+    for k, col in DEFAULTS_BY_DIM.items():
+        if k in out and out[k] == col[2]:
+            out[k] = col[dim]
+    return out
 
 
 def _objective_fns(flat0, objective):
@@ -590,7 +618,6 @@ def windowed_correct(
     margin_delta=1e-3,
     max_window_area=3000,
     mop_margin=25,
-    mop_margin_3d=6,
     no_tr_fallback=True,
     fallback_maxiter=200,
     qp_max_iter=1000,
@@ -599,7 +626,6 @@ def windowed_correct(
     giant_max_sweeps=8,
     giant_tile_fit=True,
     giant_workers=0,
-    giant_tile_3d=16,
     qp_backend='hybrid',
     ip_cold=True,
     ip_after_admm_iters=800,
@@ -646,6 +672,14 @@ def windowed_correct(
     instead of an intractable near-full-grid QP. ``margin`` is clamped to at least
     the family ring (the frozen inset band must stay fold-free).
 
+    **Per-dimension defaults.** A knob listed in :data:`DEFAULTS_BY_DIM`
+    (``giant_tile``, ``mop_margin``, ``max_window_area``, ``reanchor_tile``, the QP
+    caps) that the caller LEAVES at its 2D default is replaced at entry by that
+    knob's column for the field's dimension — so a 3D solve gets the phase-3
+    measured 3D table without a second set of ``*_3d`` parameters. Any other
+    explicit value is honoured in every dimension (``giant_tile=12`` on a 3D field
+    is 12; ``mop_margin=0`` still disables the mop).
+
     ``inner`` selects the per-window solver — ``"isqp"`` (default, the tuned
     elastic-QP SQP), ``"slsqp"``, or ``"slsqp+trust-constr"`` (see
     :func:`~dvfopt.core.windowed._inners.solve_window_inner` for the aliases).
@@ -656,13 +690,11 @@ def windowed_correct(
     with ``mop_margin`` (>> ``margin``): the diagnostic on the densest slices shows
     the plateau is boundary-stuck folds inside the giants that a small window's
     tight frozen boundary can't clear but a large frozen-exterior window can (the
-    analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0`` disables
-    (3D: the margin is ``mop_margin_3d``; ``mop_margin=0`` still disables).
-    ``mop_margin_3d`` (default 6) is the 3D margin — a residual cluster plus 6 per
-    side is a ~13-17³ window (2.2k-4.9k voxels, around ``max_window_area`` = 3000:
-    the bigger ones are solved as ONE attempt, ``ladder=False``, like a big 2D mop
-    window) and always under the mop's own ``whole_cap`` of 4x that (12000 ≈ 23³),
-    so it is not tiled.
+    analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0``
+    disables. The 3D default is 6 — a residual cluster plus 6 per side is a ~13-17³
+    window (2.2k-4.9k voxels, around ``max_window_area``: the bigger ones are solved
+    as ONE attempt, ``ladder=False``, like a big 2D mop window) and always under the
+    mop's own ``whole_cap`` of 4x that, so it is not tiled.
 
     Four knobs tune the inner solves (all ``isqp``-only, defaults measured on
     the hard B0039 crops):
@@ -697,9 +729,9 @@ def windowed_correct(
     ``giant_tile=64`` ran 362 s / 22 windows / 1 round / no mop vs 685 s /
     264 windows / 3 rounds at 32 — 1.9x faster, zero simplex folds and zero
     damage either way, and a *smaller* move (L2 316 vs 404). 64 is the default.
-    On a 3D field the tile is ``giant_tile_3d`` (default 16 per axis: 16³ voxels
-    is the 2D 64² tile by count; phase 1 measured 11 s per SQP iteration at 17³
-    and 69 s at 25³, so the tile must stay near 16).
+    On a 3D field the default is 16 per axis (16³ voxels is the 2D 64² tile by
+    count; phase 1 measured 11 s per SQP iteration at 17³ and 69 s at 25³, so the
+    tile must stay near 16).
 
     ``tr_delta`` (2.0) / ``tr_max`` (16.0) size the ``isqp`` inner's trust
     region — initial radius and cap, in grid units. The default is what every
@@ -777,10 +809,10 @@ def windowed_correct(
     open anyway, so the no-damage invariant holds unchanged and the final damage
     accounting still runs against the ORIGINAL input. It is skipped — leaving the
     path byte-identical to ``coarse_to_fine=False`` — when the field has no folds
-    or when ``min(shape) < 4 * max(tile, coarse_factor)`` where ``tile`` is
-    ``giant_tile`` (2D) or ``giant_tile_3d`` (3D) (below that the coarse
-    problem is too small to be a meaningful preview, and its own solve is
-    not amortised; the ``coarse_factor`` leg only bites for absurd factors).
+    or when ``min(shape) < 4 * max(giant_tile, coarse_factor)`` (the
+    per-dimension-resolved tile; below that the coarse problem is too
+    small to be a meaningful preview, and its own solve is not amortised;
+    the ``coarse_factor`` leg only bites for absurd factors).
     ``report.coarse_solve_s`` / ``coarse_folds_before`` / ``coarse_folds_after``
     / ``coarse_iters`` / ``warm_folds`` record the stage (``-1`` = skipped).
 
@@ -879,6 +911,19 @@ def windowed_correct(
             f"got rank {np.asarray(phi_in).ndim}"
         )
     is3d = dim == 3
+    r = resolve_dim_defaults(
+        dim,
+        giant_tile=giant_tile,
+        mop_margin=mop_margin,
+        max_window_area=max_window_area,
+        reanchor_tile=reanchor_tile,
+        reanchor_overlap=_REANCHOR_OVERLAP,
+        qp_max_iter=qp_max_iter,
+        ip_after_admm_iters=ip_after_admm_iters,
+    )
+    giant_tile, mop_margin, max_window_area = r['giant_tile'], r['mop_margin'], r['max_window_area']
+    reanchor_tile, reanchor_overlap = r['reanchor_tile'], r['reanchor_overlap']
+    qp_max_iter, ip_after_admm_iters = r['qp_max_iter'], r['ip_after_admm_iters']
     # Which polynomial the exact line search fits the rows with: a 2D row family is
     # bilinear in the displacements (exactly quadratic along a line), a 6-tet volume
     # row is trilinear (cubic). The 2D quadratic path is untouched.
@@ -898,7 +943,7 @@ def windowed_correct(
         fallback_maxiter,
         qp_max_iter,
         qp_max_iter_fallback,
-        giant_tile_3d if is3d else giant_tile,
+        giant_tile,
         giant_max_sweeps,
         giant_tile_fit,
         qp_backend,
@@ -915,7 +960,6 @@ def windowed_correct(
         giant_workers=giant_workers,
         polish=polish,
         polish_maxiter=polish_maxiter,
-        giant_tile_3d=giant_tile_3d,
         line_model=line_model,
     )
     objective = L2Objective() if objective is None else objective
@@ -923,8 +967,6 @@ def windowed_correct(
     ring = loc.ring
     margin = max(margin, ring)  # inset band must be fold-free margin, never < ring
     shape = phi.shape[1:]
-    if is3d:
-        mop_margin = mop_margin_3d if mop_margin else 0  # mop_margin=0 still disables the mop on 3D
     j0 = min_field(constraint, phi)
     orig_fold = j0 < threshold
     rep = SliceReport(folds_before=int(orig_fold.sum()), min_before=float(j0.min()))
@@ -984,8 +1026,9 @@ def windowed_correct(
                 max_rounds=max_rounds,
                 margin_delta=margin_delta,
                 max_window_area=max_window_area,
+                # the RESOLVED values: on 3D they are no longer at their 2D default,
+                # so `resolve_dim_defaults` passes them through unchanged
                 mop_margin=mop_margin,
-                mop_margin_3d=mop_margin_3d,
                 time_budget_s=time_budget_s,
                 verbose=verbose,
                 **_engine_kwargs(opts),
@@ -1096,7 +1139,6 @@ def windowed_correct(
                 margin_delta=margin_delta,
                 max_window_area=max_window_area,
                 mop_margin=mop_margin,
-                mop_margin_3d=mop_margin_3d,
                 verbose=verbose,
                 **_engine_kwargs(opts),
             ),
@@ -1150,9 +1192,8 @@ def windowed_correct(
                     reanchor,
                     reanchor_maxiter,
                     reanchor_sweeps,
-                    giant_tile_3d
-                    if is3d
-                    else reanchor_tile,  # the 3D re-anchor tile is the 3D giant tile
+                    reanchor_tile,
+                    reanchor_overlap,
                 ),
                 margin_delta,
                 rep,
@@ -1340,8 +1381,8 @@ def _reanchor_pass(
     keeps the windowed isqp out of the objective-basin traps a distance anchor pins
     it in, but leaves the correction close to the input only by construction. This
     stage recovers the fidelity afterwards, when there is no fold left to trap it:
-    tile the MOVED region (``reanchor_tile`` in 2D, ``giant_tile_3d`` in 3D,
-    overlapping by 8), re-solve each tile minimising the distance to the input
+    tile the MOVED region (``reanchor_tile``, overlapping by ``ropts.overlap``),
+    re-solve each tile minimising the distance to the input
     under the same constraint rows, and accept the tile only if every enforced row
     stays at or above ``threshold`` (per-tile verify-and-revert).
 
@@ -1359,9 +1400,9 @@ def _reanchor_pass(
         return
     obj_ref = make_objective(ropts.kind)
     tile = max(1, ropts.tile)
-    # overlap so a seam is a neighbour's interior; same floor as the tiler: the 3D
-    # re-anchor tile is giant_tile_3d (16 -> step 8; 8 -> step 4, not 1)
-    step = max(tile - _REANCHOR_OVERLAP, tile // 2, 1)
+    # overlap so a seam is a neighbour's interior; same floor as the tiler (a 3D
+    # re-anchor tile of 16 -> step 8; 8 -> step 4, not 1)
+    step = max(tile - ropts.overlap, tile // 2, 1)
     pts = np.nonzero(moved)
     lo = [int(p.min()) for p in pts]
     hi = [int(p.max()) + 1 for p in pts]
