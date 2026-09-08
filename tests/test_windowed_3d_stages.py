@@ -394,3 +394,20 @@ def test_tiler_and_reanchor_steps_never_collapse_for_small_3d_tiles():
     )
     assert n_tiles == 7**3  # not 14**3
     assert tile > step  # tiles still overlap
+
+
+def test_giant_tiles_drop_a_border_strip_too_thin_to_window():
+    # the 17^3 B0039 sub-volume: inset 17 per axis, fitted tile 12, step 8 -> starts 0, 8, 16;
+    # the 16..17 strip's ring-padded patch clips to width 2 at the border (validate_dvf min 3)
+    tiles = engine._giant_tiles((0, 17, 0, 17, 0, 17), 12, 8, (17, 17, 17), 1)
+    assert len(tiles) == 2**3 and {t[0] for t in tiles} == {0, 8}
+    cores = engine._ras_cores(tiles, 8, (0, 17, 0, 17, 0, 17))
+    assert {c[:2] for c in cores} == {(0, 8), (8, 17)}  # the previous core absorbs the strip
+    # the same inset one voxel wider keeps the strip: its padded patch is 3 wide
+    tiles = engine._giant_tiles((0, 18, 0, 18, 0, 18), 12, 8, (18, 18, 18), 1)
+    assert {t[0] for t in tiles} == {0, 8, 16}
+    # interior region: a 1-voxel strip pads to 3 on both sides and is kept (2D shape, old behaviour)
+    tiles = engine._giant_tiles((10, 137, 20, 100), 48, 42, (200, 200), 1)
+    assert {t[0] for t in tiles} == {10, 52, 94, 136}
+    cores = engine._ras_cores(tiles, 42, (10, 137, 20, 100))
+    assert {c[:2] for c in cores} == {(10, 52), (52, 94), (94, 136), (136, 137)}

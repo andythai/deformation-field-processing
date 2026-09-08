@@ -1600,11 +1600,7 @@ def _solve_giant_schwarz(
     overlap = 2 * ring + 2  # free regions must overlap so seams are some tile's interior
     # floor: a tile near the overlap must not degenerate to a 1-voxel step (3D tiles are small)
     step = max(tile - overlap, tile // 2, 1)
-    axes = [range(inset[2 * a], inset[2 * a + 1], step) for a in range(ndim)]
-    tiles = [  # itertools.product iterates axis 0 outermost — the 2D `for ty ... for tx` order
-        tuple(v for a, t in enumerate(starts) for v in (t, min(t + tile, inset[2 * a + 1])))
-        for starts in itertools.product(*axes)
-    ]
+    tiles = _giant_tiles(inset, tile, step, shape, ring)
     if (
         not tiles
     ):  # an over-cap region thinner than 2 * ring on some interior axis has no inset to tile
@@ -1687,15 +1683,49 @@ def _solve_giant_schwarz(
     return prev if prev is not None else 0
 
 
+def _giant_tiles(inset, tile, step, shape, ring):
+    """The tile boxes covering an inset region (any rank): starts every ``step`` per
+    axis, each tile ``tile`` long and clipped to the inset; ``itertools.product`` iterates
+    axis 0 outermost — the 2D ``for ty ... for tx`` order. A trailing start whose
+    ring-padded patch would be thinner than the constraint's 3-voxel minimum on that
+    axis (a 1-voxel remainder strip on an image border, where the pad is clipped) is
+    dropped: the strip is already inside the previous tile (``tile - step >= 2``), and
+    a window that thin is refused by ``validate_dvf`` (hit on the 17³ B0039
+    sub-volume: inset 17, fitted tile 12, step 8 -> starts 0, 8, 16)."""
+    ndim = len(shape)
+    axes = []
+    for a in range(ndim):
+        lo, hi = inset[2 * a], inset[2 * a + 1]
+        starts = list(range(lo, hi, step))
+        while len(starts) > 1:
+            s = starts[-1]
+            if min(shape[a], min(s + tile, hi) + ring) - max(0, s - ring) >= 3:
+                break
+            starts.pop()
+        axes.append(starts)
+    return [
+        tuple(v for a, t in enumerate(starts) for v in (t, min(t + tile, inset[2 * a + 1])))
+        for starts in itertools.product(*axes)
+    ]
+
+
 def _ras_cores(tiles, step, inset):
     """Disjoint step-grid cores of the tiles (any rank): a tile starting at ``t`` on an
-    axis owns ``[t, min(t + step, inset_hi))`` there — a partition of the inset region
-    (tiles overlap, cores do not)."""
+    axis owns ``[t, next start)`` there, the last start on each axis owning up to the
+    inset edge — a partition of the inset region (tiles overlap, cores do not). With a
+    full ``step`` grid of starts this is ``[t, min(t + step, inset_hi))``; when
+    :func:`_giant_tiles` dropped a trailing strip, the previous tile's core absorbs it."""
     ndim = len(inset) // 2
-    return [
-        tuple(v for a in range(ndim) for v in (tb[2 * a], min(tb[2 * a] + step, inset[2 * a + 1])))
-        for tb in tiles
-    ]
+    nxt = []
+    for a in range(ndim):
+        starts = sorted({tb[2 * a] for tb in tiles})
+        nxt.append(
+            {
+                t: (starts[i + 1] if i + 1 < len(starts) else inset[2 * a + 1])
+                for i, t in enumerate(starts)
+            }
+        )
+    return [tuple(v for a in range(ndim) for v in (tb[2 * a], nxt[a][tb[2 * a]])) for tb in tiles]
 
 
 def _ras_tile_task(args):
