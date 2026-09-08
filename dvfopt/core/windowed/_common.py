@@ -1443,12 +1443,16 @@ def _reanchor_pass(
         prev = cur
 
 
+# ``_InnerOpts`` knobs that are NOT ``windowed_correct`` parameters: ``ladder`` is
+# per-window (the mop's big windows) and ``line_model`` is derived from the field's
+# dimension. Every recursive-solve kwarg filter drops exactly these.
+_NOT_ENGINE_KWARGS = ("ladder", "line_model")
+
+
 def _engine_kwargs(opts):
     """``_InnerOpts`` as ``windowed_correct`` kwargs for a recursive solve (the coarse
-    warm start, the re-seed polish): every knob except ``ladder`` (per-window: the
-    mop's big windows) and ``line_model`` (derived from the field's dimension) —
-    neither is a ``windowed_correct`` parameter."""
-    return {k: v for k, v in asdict(opts).items() if k not in ("ladder", "line_model")}
+    warm start, the re-seed polish): every knob except :data:`_NOT_ENGINE_KWARGS`."""
+    return {k: v for k, v in asdict(opts).items() if k not in _NOT_ENGINE_KWARGS}
 
 
 def _harmonic_fill(phi, mask):
@@ -1548,7 +1552,7 @@ def _reseed_stage(
             reseed_rounds=0,
             reanchor="none",
             time_budget_s=None,
-            **{k: v for k, v in sub_kw.items() if k != "ladder"},
+            **{k: v for k, v in sub_kw.items() if k not in _NOT_ENGINE_KWARGS},
         )
         phi[...] = out
         for w in rep_in.windows:  # the polish's enforced footprints (= the padded patches)
