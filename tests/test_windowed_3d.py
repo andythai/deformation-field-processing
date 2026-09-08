@@ -305,13 +305,9 @@ def test_3d_exact_ls_default_degrades_to_tr(monkeypatch):
     assert seen and set(seen) == {"tr"}
 
 
-def test_3d_refuses_the_unported_stages():
+def test_3d_refuses_the_full_rows_kind():
     phi = np.zeros((3, 6, 8, 8))
     c = SimplexConstraint3D(shape=phi.shape[1:])
-    with pytest.raises(ValueError, match="3D"):
-        windowed_correct(phi, "isqp", constraint=c, threshold=THR, reanchor="l2")
-    with pytest.raises(ValueError, match="3D"):
-        windowed_correct(phi, "isqp", constraint=c, threshold=THR, polish="l2")
     with pytest.raises(ValueError, match="edges"):
         windowed_correct(phi, "isqp", constraint=c, threshold=THR, orientation_rows="full")
 

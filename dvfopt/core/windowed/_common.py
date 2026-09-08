@@ -879,10 +879,6 @@ def windowed_correct(
             "windowed_correct: step_rule='exact_ls' is 2D-only; using 'tr' on this 3D field"
         )
         step_rule = 'tr'
-    if is3d and (reanchor != 'none' or polish is not None):
-        raise ValueError(
-            'reanchor and polish are not yet supported on 3D fields (3D port, phase 2)'
-        )
     if is3d and orientation_delta is not None and orientation_rows != 'edges':
         raise ValueError("3D orientation rows: only kind='edges' exists (no convexity rows in 3D)")
     if orientation_delta is not None:
@@ -1146,7 +1142,14 @@ def windowed_correct(
                 np.asarray(phi_in, dtype=np.float64),
                 constraint,
                 threshold,
-                _ReanchorOpts(reanchor, reanchor_maxiter, reanchor_sweeps, reanchor_tile),
+                _ReanchorOpts(
+                    reanchor,
+                    reanchor_maxiter,
+                    reanchor_sweeps,
+                    giant_tile_3d
+                    if is3d
+                    else reanchor_tile,  # the 3D re-anchor tile is the 3D giant tile
+                ),
                 margin_delta,
                 rep,
                 inner,
@@ -1297,8 +1300,8 @@ def _reanchor_tile(
     sub = build_subproblem(constraint, phi, box, threshold, None, margin_delta, free_extra=moved)
     if sub.free_idx.size == 0 or sub.n_enforced == 0:
         return False
-    py0, py1, px0, px1 = sub.patch_box
-    ref = np.asarray(sub.constraint.flatten(np.ascontiguousarray(phi_ref[:, py0:py1, px0:px1])))
+    psl = (slice(None), *_box_slices(sub.patch_box))
+    ref = np.asarray(sub.constraint.flatten(np.ascontiguousarray(phi_ref[psl])))
     # Same helper the engine builds its own objective with, re-anchored at the INPUT
     # patch instead of the current one (L1's eps rides on the Objective, as there).
     obj, grad, hess = _objective_fns(ref, obj_ref)
@@ -1322,7 +1325,7 @@ def _reanchor_tile(
     if sub.cons(x).min() < -margin_delta + _REANCHOR_TOL or obj(x) >= obj(sub.flat0):
         return False
     patch_out = np.asarray(sub.constraint.unflatten(x))
-    dst = phi[:, py0:py1, px0:px1]
+    dst = phi[psl]
     dst[:, sub.free_mask] = patch_out[:, sub.free_mask]
     return True
 
@@ -1336,7 +1339,8 @@ def _reanchor_pass(
     keeps the windowed isqp out of the objective-basin traps a distance anchor pins
     it in, but leaves the correction close to the input only by construction. This
     stage recovers the fidelity afterwards, when there is no fold left to trap it:
-    tile the MOVED region, re-solve each tile minimising the distance to the input
+    tile the MOVED region (``reanchor_tile`` in 2D, ``giant_tile_3d`` in 3D,
+    overlapping by 8), re-solve each tile minimising the distance to the input
     under the same constraint rows, and accept the tile only if every enforced row
     stays at or above ``threshold`` (per-tile verify-and-revert).
 
@@ -1355,8 +1359,9 @@ def _reanchor_pass(
     obj_ref = make_objective(ropts.kind)
     tile = max(1, ropts.tile)
     step = max(1, tile - _REANCHOR_OVERLAP)  # overlap so a seam is a neighbour's interior
-    ys, xs = np.nonzero(moved)
-    y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+    pts = np.nonzero(moved)
+    lo = [int(p.min()) for p in pts]
+    hi = [int(p.max()) + 1 for p in pts]
 
     def l2_move():
         return float(np.linalg.norm((phi - phi_ref).ravel()))
@@ -1364,30 +1369,29 @@ def _reanchor_pass(
     rep.reanchor_l2_before = rep.reanchor_l2_after = prev = l2_move()
     for _sweep in range(max(0, ropts.sweeps)):
         rep.reanchor_sweeps_run += 1
-        for ty in range(y0, y1, step):
-            for tx in range(x0, x1, step):
-                box = (ty, min(ty + tile, y1), tx, min(tx + tile, x1))
-                if not moved[box[0] : box[1], box[2] : box[3]].any():
-                    continue
-                if expired is not None and expired():
-                    rep.reanchor_l2_after = l2_move()
-                    return
-                rep.reanchor_tiles += 1
-                rep.reanchor_accepted += int(
-                    _reanchor_tile(
-                        phi,
-                        phi_ref,
-                        constraint,
-                        box,
-                        threshold,
-                        obj_ref,
-                        moved,
-                        ropts,
-                        margin_delta,
-                        inner,
-                        opts,
-                    )
+        for starts in itertools.product(*(range(a, b, step) for a, b in zip(lo, hi))):
+            box = tuple(v for t, b in zip(starts, hi) for v in (t, min(t + tile, b)))
+            if not moved[_box_slices(box)].any():
+                continue
+            if expired is not None and expired():
+                rep.reanchor_l2_after = l2_move()
+                return
+            rep.reanchor_tiles += 1
+            rep.reanchor_accepted += int(
+                _reanchor_tile(
+                    phi,
+                    phi_ref,
+                    constraint,
+                    box,
+                    threshold,
+                    obj_ref,
+                    moved,
+                    ropts,
+                    margin_delta,
+                    inner,
+                    opts,
                 )
+            )
         cur = l2_move()
         rep.reanchor_l2_after = cur
         if prev - cur < _REANCHOR_MIN_GAIN * prev:

@@ -282,3 +282,47 @@ def test_3d_reseed_stage_runs_on_a_residual_and_books_touched():
     if rep.reseed_folds_before > 0:
         assert rep.reseed_rounds_run >= 1 and rep.reseed_px > 0
         assert rep.reseed_folds_after <= rep.reseed_folds_before
+
+
+@needs_osqp
+@pytest.mark.parametrize("kind", ["l2", "l1"])
+def test_3d_reanchor_reduces_the_move_and_keeps_zero_folds(kind):
+    phi = _blob((8, 40, 20), (4, 20, 10), (4, 6, 6), amp=0.5)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    base, rep0 = windowed_correct(
+        phi.copy(), "isqp", constraint=c, objective=NoneObjective(), threshold=THR, verbose=0
+    )
+    assert rep0.folds_after == 0
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        reanchor=kind,
+        giant_tile_3d=16,
+        reanchor_maxiter=8,  # unit-test budget; tile 16 steps by 8 (the overlap is 8), so the moved region is ~8 tiles
+        reanchor_sweeps=1,
+    )
+    assert rep.folds_after == 0 and rep.damage == 0
+    assert rep.reanchor_sweeps_run >= 1 and rep.reanchor_tiles >= 1
+    assert rep.reanchor_l2_after <= rep.reanchor_l2_before
+    moved0 = np.any(base != phi, axis=0)
+    assert not np.any(out != phi, axis=0)[~moved0].any()  # only voxels the main solve moved
+
+
+@needs_osqp
+def test_3d_polish_runs_and_keeps_zero_folds():
+    phi = _blob((8, 40, 20), (4, 20, 10), (4, 6, 6), amp=0.5)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        polish="l2",
+    )
+    assert rep.folds_after == 0 and rep.damage == 0 and rep.polish_windows >= 1
