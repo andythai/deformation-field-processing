@@ -288,21 +288,23 @@ def test_3d_fold_free_input_is_returned_byte_identical():
 
 
 @needs_osqp
-def test_3d_exact_ls_default_degrades_to_tr(monkeypatch):
+def test_3d_exact_ls_default_uses_the_cubic_line_model(monkeypatch):
+    """Phase 3: ``'exact_ls'`` stays on in 3D and the inner fits the rows with the
+    CUBIC line model (a 6-tet volume row is trilinear, hence cubic along a line)."""
     import dvfopt.core.windowed._common as cm
 
     seen = []
     orig = cm.solve_window_inner
 
     def spy(sub, inner, maxiter, **kw):
-        seen.append(kw.get("step_rule"))
+        seen.append((kw.get("step_rule"), kw.get("line_model")))
         return orig(sub, inner, maxiter, **kw)
 
     monkeypatch.setattr(cm, "solve_window_inner", spy)
     phi = _planted_3d((6, 10, 10), amp=1.0)
     c = SimplexConstraint3D(shape=phi.shape[1:])
     windowed_correct(phi, "isqp", constraint=c, threshold=THR, verbose=0, maxiter=3)  # 'exact_ls'
-    assert seen and set(seen) == {"tr"}
+    assert seen and set(seen) == {("exact_ls", "cubic")}
 
 
 def test_3d_refuses_the_full_rows_kind():

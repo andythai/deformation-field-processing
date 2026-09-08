@@ -59,7 +59,7 @@ import numpy as np
 from scipy import ndimage, sparse
 from scipy.sparse.linalg import spsolve
 
-from dvfopt._logging import log_warning, logger
+from dvfopt._logging import log_warning
 from dvfopt.objectives import L2Objective, _kind_eps, make_objective
 
 from ._inners import _ISQP_LABELS, WindowSub, solve_window_inner
@@ -107,6 +107,7 @@ class _InnerOpts:
     giant_tile_3d: int = (
         16  # the 3D tile knob; on a 3D field `giant_tile` is RESOLVED to it at entry
     )
+    line_model: str = 'quadratic'  # 'cubic' on a 3D field: a 6-tet row is cubic along a line
 
 
 @dataclass(frozen=True)
@@ -718,8 +719,11 @@ def windowed_correct(
     with a smaller L2 move on every slice. It applies on the no-trust-region
     fallback rung too — scoping it out of that rung was measured WORSE (re-measured
     on the shipped implementation: ``z0_sliver`` 1918 SQP iterations vs 1684).
-    ``'tr'`` restores the ratio-test path byte for byte. ``'exact_ls'`` is
-    2D-only: on a 3D field it degrades to ``'tr'`` (DEBUG log).
+    ``'tr'`` restores the ratio-test path byte for byte. On a 3D field the rows
+    are CUBIC along the line instead (a 6-tet volume is trilinear), so the inner
+    fits them with the cubic model — one extra ``cons`` evaluation at ``a = 1/2``
+    pins it exactly, and its minimiser is taken on a dense grid refined by golden
+    section. The true merit at ``a*`` is verified before stepping either way.
 
     ``exact_ls_fallback_steps`` (default 3, 0 = off) is what keeps ``'exact_ls'``
     from grinding on a window it cannot solve. The exact minimiser always finds
@@ -875,15 +879,10 @@ def windowed_correct(
             f"got rank {np.asarray(phi_in).ndim}"
         )
     is3d = dim == 3
-    if step_rule == 'exact_ls' and is3d:
-        # The exact line model needs rows that are BILINEAR in the displacements — true
-        # of every 2D family here, false of a 6-tet volume (trilinear, hence cubic along
-        # a line). Degrade to the ratio test — the way orientation_delta is dropped on
-        # non-DY_FIRST packs below — until phase 3 of the 3D port ships the cubic model.
-        logger.debug(
-            "windowed_correct: step_rule='exact_ls' is 2D-only; using 'tr' on this 3D field"
-        )
-        step_rule = 'tr'
+    # Which polynomial the exact line search fits the rows with: a 2D row family is
+    # bilinear in the displacements (exactly quadratic along a line), a 6-tet volume
+    # row is trilinear (cubic). The 2D quadratic path is untouched.
+    line_model = 'cubic' if is3d else 'quadratic'
     if is3d and orientation_delta is not None and orientation_rows != 'edges':
         raise ValueError("3D orientation rows: only kind='edges' exists (no convexity rows in 3D)")
     if orientation_delta is not None:
@@ -917,6 +916,7 @@ def windowed_correct(
         polish=polish,
         polish_maxiter=polish_maxiter,
         giant_tile_3d=giant_tile_3d,
+        line_model=line_model,
     )
     objective = L2Objective() if objective is None else objective
     phi = np.array(phi_in, dtype=np.float64, copy=True)
@@ -1317,6 +1317,7 @@ def _reanchor_tile(
         tr_delta=opts.tr_delta,
         tr_max=opts.tr_max,
         step_rule=opts.step_rule,
+        line_model=opts.line_model,
     )
     # Verify-and-revert. `cons = values - (threshold + margin_delta)`, so an
     # enforced row is still fold-free exactly when `cons >= -margin_delta`; the
@@ -1403,9 +1404,10 @@ def _reanchor_pass(
 
 def _engine_kwargs(opts):
     """``_InnerOpts`` as ``windowed_correct`` kwargs for a recursive solve (the coarse
-    warm start, the re-seed polish): every knob except ``ladder``, which is per-window
-    (the mop's big windows) and not a ``windowed_correct`` parameter."""
-    return {k: v for k, v in asdict(opts).items() if k != "ladder"}
+    warm start, the re-seed polish): every knob except ``ladder`` (per-window: the
+    mop's big windows) and ``line_model`` (derived from the field's dimension) —
+    neither is a ``windowed_correct`` parameter."""
+    return {k: v for k, v in asdict(opts).items() if k not in ("ladder", "line_model")}
 
 
 def _harmonic_fill(phi, mask):
@@ -1808,6 +1810,7 @@ def _solve_window(
             tr_max=opts.tr_max,
             step_rule=opts.step_rule,
             exact_ls_fallback_steps=opts.exact_ls_fallback_steps,
+            line_model=opts.line_model,
             feas_tol=0.5 * margin_delta,
             ftol=opts.ftol,
         )
@@ -1834,6 +1837,7 @@ def _solve_window(
                 tr_max=opts.tr_max,
                 step_rule=opts.step_rule,
                 exact_ls_fallback_steps=opts.exact_ls_fallback_steps,
+                line_model=opts.line_model,
                 feas_tol=0.5 * margin_delta,
                 ftol=opts.ftol,
             )
@@ -1914,6 +1918,7 @@ def _solve_window(
             tr_max=opts.tr_max,
             step_rule=opts.step_rule,
             exact_ls_fallback_steps=0,
+            line_model=opts.line_model,
             feas_tol=0.5 * margin_delta,
             ftol=opts.ftol,
         )
@@ -1966,6 +1971,7 @@ def _solve_window(
                 tr_delta=opts.tr_delta,
                 tr_max=opts.tr_max,
                 step_rule=opts.step_rule,
+                line_model=opts.line_model,
                 ftol=opts.ftol,
             )
             nit += pnit
