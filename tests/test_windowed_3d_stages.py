@@ -107,3 +107,71 @@ def test_strategy_forwards_the_3d_knobs(monkeypatch):
     )
     assert seen["giant_tile_3d"] == 12 and seen["mop_margin_3d"] == 4
     assert seen["giant_tile"] == 64 and seen["mop_margin"] == 25  # the 2D knobs are not repurposed
+
+
+def test_fit_tile_nd_matches_the_2d_fit_and_clamps():
+    assert engine._fit_tile_nd((125, 152), 64) == engine._fit_tile(125, 152, 64) == 51
+    assert engine._fit_tile_nd((24, 24, 24), 16) == 12  # ceil(24/2), clamped to [12, 24]
+    assert (
+        engine._fit_tile_nd((10, 10, 10), 16) == 12
+    )  # a region smaller than the target keeps a usable tile
+
+
+def test_ras_cores_partition_a_3d_inset_region():
+    inset = (0, 10, 0, 10, 0, 10)
+    tiles = [
+        (z, min(z + 6, 10), y, min(y + 6, 10), x, min(x + 6, 10))
+        for z in range(0, 10, 4)
+        for y in range(0, 10, 4)
+        for x in range(0, 10, 4)
+    ]
+    cores = engine._ras_cores(tiles, 4, inset)
+    cover = np.zeros((10, 10, 10), int)
+    for core in cores:
+        cover[engine._box_slices(core)] += 1
+    assert (cover == 1).all()  # a partition: every voxel in exactly one core
+
+
+@needs_osqp
+def test_3d_giant_region_is_tiled_and_cleared():
+    # a 10^3 blob -> one connected free box of ~16^3 = 4096 > max_window_area=800 -> the tiler;
+    # _fit_tile_nd((16, 16, 16), 10) == 8, step 4 -> 4 tiles per axis of <= 8^3 voxels each
+    phi = _blob((22, 22, 22), (11, 11, 11), (10, 10, 10), amp=0.4, seed=3)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    assert (min_field(c, phi) < THR).sum() > 100
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        max_window_area=800,
+        giant_tile_3d=10,
+        mop_margin_3d=0,
+        reseed_rounds=0,
+    )
+    assert rep.giant_regions >= 1 and len(rep.giant_boxes[0]) == 6
+    assert rep.n_windows > 1  # more than one tile was solved
+    assert rep.damage == 0 and rep.folds_after == 0
+    assert np.array_equal(out[:, :2], phi[:, :2])  # the inset keeps the far planes untouched
+
+
+@needs_osqp
+def test_3d_giant_workers_ras_reaches_zero_folds_damage_zero():
+    phi = _blob((22, 22, 22), (11, 11, 11), (10, 10, 10), amp=0.4, seed=3)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        max_window_area=800,
+        giant_tile_3d=10,
+        giant_workers=2,
+        mop_margin_3d=0,
+        reseed_rounds=0,
+    )
+    assert rep.giant_regions >= 1 and rep.damage == 0 and rep.folds_after == 0

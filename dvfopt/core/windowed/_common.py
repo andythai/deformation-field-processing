@@ -50,6 +50,7 @@ tiles with damage accounting — and deliberately does NOT reuse
 ``core/schwarz/_common.py``, whose crop-Strategy contract cannot freeze rings.
 """
 
+import itertools
 import math
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -1005,7 +1006,6 @@ def windowed_correct(
 
     budget_hit = False
     prev_nfold = None
-    giant_warned = False
     for _rnd in range(max_rounds):
         if _expired():
             budget_hit = True
@@ -1030,37 +1030,28 @@ def windowed_correct(
             # damage — so damage=0 is by construction, not merely for feasible solves.
             touched[_box_slices(_pad_box(box, shape, ring))] = True
             if _box_size(box) > max_window_area:
+                # too big for one QP -> overlapping-tile Schwarz decomposition
                 rep.giant_regions += 1
                 rep.giant_boxes.append(box)
-                if not is3d:
-                    # too big for one QP -> overlapping-tile Schwarz decomposition
-                    giant_w0 = len(rep.windows)
-                    _solve_giant_schwarz(
-                        phi,
-                        constraint,
-                        box,
-                        threshold,
-                        objective,
-                        maxiter,
-                        ring,
-                        rep,
-                        margin_delta,
-                        inner=inner,
-                        opts=opts,
-                        expired=_expired,
-                    )
-                    if record_history:
-                        rep.history.append(_stage_entry("giant", giant_w0))
-                    _fire("giant", phi)
-                    continue
-                if not giant_warned:
-                    # Phase 1 of the 3D port: the voxel cap is advisory — the region is
-                    # solved whole (the 3D tiler is phase 2). Warned once per call.
-                    giant_warned = True
-                    log_warning(
-                        f"windowed_correct: 3D region of {_box_size(box)} voxels exceeds "
-                        f"max_window_area={max_window_area}; solving it whole (3D tiler pending)"
-                    )
+                giant_w0 = len(rep.windows)
+                _solve_giant_schwarz(
+                    phi,
+                    constraint,
+                    box,
+                    threshold,
+                    objective,
+                    maxiter,
+                    ring,
+                    rep,
+                    margin_delta,
+                    inner=inner,
+                    opts=opts,
+                    expired=_expired,
+                )
+                if record_history:
+                    rep.history.append(_stage_entry("giant", giant_w0))
+                _fire("giant", phi)
+                continue
             _solve_window(
                 phi,
                 constraint,
@@ -1513,6 +1504,16 @@ def _reseed_stage(
     rep.reseed_folds_after = int(pixel_fold_mask(constraint, phi, threshold).sum())
 
 
+def _fit_tile_nd(extents, target, lo_frac=0.75, hi_frac=1.5):
+    """:func:`_fit_tile` over a region's per-axis extents (any rank): the largest tile
+    no bigger than ``target`` that covers the LONGEST extent with an integer number of
+    near-equal tiles, clamped to ``[lo_frac, hi_frac] * target``."""
+    longest = max(int(v) for v in extents)
+    n = max(1, -(-longest // target))  # tiles along the longest side
+    tile = -(-longest // n)
+    return int(min(max(tile, math.ceil(lo_frac * target)), math.ceil(hi_frac * target)))
+
+
 def _fit_tile(h, w, target, lo_frac=0.75, hi_frac=1.5):
     """Fit a giant region's tile size to its geometry: the largest tile no bigger
     than ``target`` that covers the region's longest side with an integer number
@@ -1529,9 +1530,7 @@ def _fit_tile(h, w, target, lo_frac=0.75, hi_frac=1.5):
     guarantee: tiles step by ``tile - overlap``, so exact integer coverage of
     the side is approximate, and only the region's longest side is fitted.
     """
-    n = max(1, -(-max(h, w) // target))  # tiles along the longest side
-    tile = -(-max(h, w) // n)
-    return int(min(max(tile, math.ceil(lo_frac * target)), math.ceil(hi_frac * target)))
+    return _fit_tile_nd((h, w), target, lo_frac, hi_frac)
 
 
 def _solve_giant_schwarz(
@@ -1566,27 +1565,37 @@ def _solve_giant_schwarz(
     The inset band is fold-free margin (needs ``margin >= ring``), so insetting
     leaves no fold unfixed. Image-border edges are not inset — no "outside" there.
     Without the inset, an infeasible edge-tile solve can leave a boundary guard row
-    just outside the giant violated -> a damage fold (observed on B0039 z=0)."""
+    just outside the giant violated -> a damage fold (observed on B0039 z=0).
+
+    Any rank: the giant box, the inset region, the tiles and the RAS cores are
+    per-axis ``(lo, hi)`` pairs."""
     opts = _InnerOpts() if opts is None else opts
     tile, max_sweeps = opts.giant_tile, opts.giant_max_sweeps
-    H, W = phi.shape[1:]
-    fy0, fy1, fx0, fx1 = giant_box
+    shape = phi.shape[1:]
+    ndim = len(shape)
+    extents = [giant_box[2 * a + 1] - giant_box[2 * a] for a in range(ndim)]
     if opts.giant_tile_fit:
-        tile = _fit_tile(fy1 - fy0, fx1 - fx0, tile)
-    it0 = fy0 + (ring if fy0 > 0 else 0)  # inset interior edges; keep image borders
-    it1 = fy1 - (ring if fy1 < H else 0)
-    ix0 = fx0 + (ring if fx0 > 0 else 0)
-    ix1 = fx1 - (ring if fx1 < W else 0)
+        tile = _fit_tile_nd(extents, tile)
+    inset = []
+    for a, n in enumerate(shape):  # inset interior faces by the ring; keep image borders
+        lo, hi = giant_box[2 * a], giant_box[2 * a + 1]
+        inset += [lo + (ring if lo > 0 else 0), hi - (ring if hi < n else 0)]
+    inset = tuple(inset)
     overlap = 2 * ring + 2  # free regions must overlap so seams are some tile's interior
     step = max(1, tile - overlap)
-    tiles = [
-        (ty, min(ty + tile, it1), tx, min(tx + tile, ix1))
-        for ty in range(it0, it1, step)
-        for tx in range(ix0, ix1, step)
+    axes = [range(inset[2 * a], inset[2 * a + 1], step) for a in range(ndim)]
+    tiles = [  # itertools.product iterates axis 0 outermost — the 2D `for ty ... for tx` order
+        tuple(v for a, t in enumerate(starts) for v in (t, min(t + tile, inset[2 * a + 1])))
+        for starts in itertools.product(*axes)
     ]
+    gsl = _box_slices(giant_box)
+
+    def _nonempty(b):
+        return all(b[2 * a + 1] > b[2 * a] for a in range(ndim))
+
     prev = None
     ras = int(getattr(opts, 'giant_workers', 0) or 0)
-    cores = _ras_cores(tiles, step, (it0, it1, ix0, ix1)) if ras > 1 else None
+    cores = _ras_cores(tiles, step, inset) if ras > 1 else None
     for _sweep in range(max_sweeps):
         if ras > 1:
             # Restricted additive Schwarz: every tile solves from the SAME
@@ -1614,15 +1623,14 @@ def _solve_giant_schwarz(
                     opts,
                 )
                 for tb, core in zip(tiles, cores)
-                if tb[1] > tb[0] and tb[3] > tb[2] and core[1] > core[0] and core[3] > core[2]
+                if _nonempty(tb) and _nonempty(core)
             ]
             for core, vals, sub_rep in pool_map(_ras_tile_task, args, ras):
-                cy0, cy1, cx0, cx1 = core
-                phi[:, cy0:cy1, cx0:cx1] = vals
+                phi[(slice(None), *_box_slices(core))] = vals
                 rep.windows.extend(sub_rep.windows)
                 rep.backend_fallbacks += sub_rep.backend_fallbacks
                 rep.patience_fallbacks += sub_rep.patience_fallbacks
-            nf = int((min_field(constraint, phi)[fy0:fy1, fx0:fx1] < threshold).sum())
+            nf = int((min_field(constraint, phi)[gsl] < threshold).sum())
             if nf == 0 or (prev is not None and nf >= prev):
                 return nf
             prev = nf
@@ -1633,7 +1641,7 @@ def _solve_giant_schwarz(
                 # a giant region is many window solves, not one (measured: a 40 s
                 # budget ran 189 s on raw B0039 z16 before this check existed).
                 return prev if prev is not None else -1
-            if tb[1] > tb[0] and tb[3] > tb[2]:
+            if _nonempty(tb):
                 _solve_window(
                     phi,
                     constraint,
@@ -1648,7 +1656,7 @@ def _solve_giant_schwarz(
                     inner=inner,
                     opts=opts,
                 )
-        nf = int((min_field(constraint, phi)[fy0:fy1, fx0:fx1] < threshold).sum())
+        nf = int((min_field(constraint, phi)[gsl] < threshold).sum())
         if nf == 0 or (prev is not None and nf >= prev):
             return nf  # cleared, or no further progress (geometric floor)
         prev = nf
@@ -1656,12 +1664,13 @@ def _solve_giant_schwarz(
 
 
 def _ras_cores(tiles, step, inset):
-    """Disjoint step-grid cores of the tiles: tile (ty0, ty1, tx0, tx1) laid at
-    step intervals owns ``[ty0, min(ty0 + step, it1)) x [tx0, min(tx0 + step, ix1))``
-    — a partition of the inset region (tiles overlap, cores do not)."""
-    it0, it1, ix0, ix1 = inset
+    """Disjoint step-grid cores of the tiles (any rank): a tile starting at ``t`` on an
+    axis owns ``[t, min(t + step, inset_hi))`` there — a partition of the inset region
+    (tiles overlap, cores do not)."""
+    ndim = len(inset) // 2
     return [
-        (ty0, min(ty0 + step, it1), tx0, min(tx0 + step, ix1)) for (ty0, _ty1, tx0, _tx1) in tiles
+        tuple(v for a in range(ndim) for v in (tb[2 * a], min(tb[2 * a] + step, inset[2 * a + 1])))
+        for tb in tiles
     ]
 
 
@@ -1690,8 +1699,8 @@ def _ras_tile_task(args):
         inner=inner,
         opts=opts,
     )
-    cy0, cy1, cx0, cx1 = core
-    return core, phi[:, cy0:cy1, cx0:cx1].copy(), rep
+    csl = _box_slices(core)
+    return core, phi[(slice(None), *csl)].copy(), rep
 
 
 def _solve_window(
