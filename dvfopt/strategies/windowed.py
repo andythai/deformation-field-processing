@@ -162,7 +162,8 @@ class WindowedWrapperStrategy(Strategy):
         B0039 z16: 205 s / 909 SQP iterations (841 fine + a 16 s,
         68-iteration coarse solve) vs 283 s / 1320 cold, at a slightly
         smaller L2 move (320.6 vs 325.1). Skipped — byte-identical to ``False`` — on a fold-free
-        field or one with ``min(H, W) < 4 * giant_tile``.
+        field or one with ``min(shape) < 4 * tile`` (``giant_tile`` in 2D,
+        ``giant_tile_3d`` in 3D).
     coarse_factor : int
         Coarsening factor for that stage (box-average blocks).
     reanchor : str

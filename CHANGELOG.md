@@ -6,6 +6,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — 3D windowed engine, phase 2: every stage runs on 3D fields
+
+- The giant-region Schwarz tiler (serial sweeps and `giant_workers` RAS), the coarse-grid warm start, the terminal mop, the harmonic re-seed, the re-anchor stage and the per-window polish are dimension-agnostic (`itertools.product` over per-axis ranges through the phase-1 box helpers; byte-identical in 2D — `benchmarks/windowed_2d_identity.py`: 21 cases, `IDENTITY PASS`). Two 3D defaults, sized from phase 1's cost curve: `giant_tile_3d=16` per axis (16³ voxels is the 2D 64² tile by count) and `mop_margin_3d=6`; the 3D re-anchor tile is `giant_tile_3d`. The phase-1 gates (advisory cap, skipped stages, refused `reanchor` / `polish`) are gone.
+- Measured (`benchmarks/make_hard_crops_3d.py`, four 24³ crops of the raw B0039 field, threshold 0.01, `'tr'`):
+
+  | case | cfg | giant_tile_3d | mop_margin_3d | folds_in | floor_in | folds_out | floor_out | min_out | damage | rounds | n_windows | giant_regions | mop_windows | reseed_rounds_run | sqp_iters | wall_s | l2_move |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+  | sliver | l2_rows | 16 | 6 | 1094 | 1071 | 0 | 0 | 0.0110 | 0 | 1 | 27 | 1 | 0 | 0 | 699 | 633 | 23.3 |
+  | twist | l2_rows | 16 | 6 | 403 | 352 | 0 | 0 | 0.0109 | 0 | 1 | 29 | 1 | 0 | 0 | 468 | 576 | 27.0 |
+
+  <!-- remaining crop rows (cluster, moderate; none_rows; the giant_tile_3d A/B): appended by the orchestrator when the measurement chain ends -->
+
 ### Added — 3D windowed engine, phase 1: family plumbing + certificate (`SimplexConstraint3D` in `ISQPWindowedStrategy`)
 
 - `windowed_correct` / `ISQPWindowedStrategy` accept `SimplexConstraint3D` on

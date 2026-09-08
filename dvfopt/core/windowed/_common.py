@@ -769,8 +769,9 @@ def windowed_correct(
     open anyway, so the no-damage invariant holds unchanged and the final damage
     accounting still runs against the ORIGINAL input. It is skipped — leaving the
     path byte-identical to ``coarse_to_fine=False`` — when the field has no folds
-    or when ``min(H, W) < 4 * max(giant_tile, coarse_factor)`` (below that the
-    coarse problem is too small to be a meaningful preview, and its own solve is
+    or when ``min(shape) < 4 * max(tile, coarse_factor)`` where ``tile`` is
+    ``giant_tile`` (2D) or ``giant_tile_3d`` (3D) (below that the coarse
+    problem is too small to be a meaningful preview, and its own solve is
     not amortised; the ``coarse_factor`` leg only bites for absurd factors).
     ``report.coarse_solve_s`` / ``coarse_folds_before`` / ``coarse_folds_after``
     / ``coarse_iters`` / ``warm_folds`` record the stage (``-1`` = skipped).
