@@ -40,7 +40,12 @@ CROPS = {
     "sliver": (204, 124, 260),
     "moderate": (228, 136, 140),
 }
-CFGS = {"l2_rows": (L2Objective, 0.01), "none_rows": (NoneObjective, 0.01)}
+# <objective>_<rows|norows>: 'none' is NoneObjective (pure feasibility), 'rows' = the 3D edge rows on
+CFGS = {
+    "l2_rows": (L2Objective, 0.01),
+    "none_rows": (NoneObjective, 0.01),
+    "l2_norows": (L2Objective, None),
+}
 
 
 def build():
@@ -102,12 +107,12 @@ def run(name, cfg, giant_tile_3d, mop_margin_3d):
         l2_move=float(np.linalg.norm(move.ravel())),
         l1_move=float(np.abs(move).sum()),
     )
-    assert rec["damage"] == 0, rec
     with open(
         os.path.join(OUT, f"crops_{name}_{cfg}_t{giant_tile_3d}_m{mop_margin_3d}.json"), "w"
     ) as fh:
         json.dump(rec, fh, indent=1)
     print(json.dumps(rec), flush=True)
+    assert rec["damage"] == 0, rec
     return rec
 
 
@@ -133,6 +138,11 @@ def table():
         "giant_regions",
         "mop_windows",
         "reseed_rounds_run",
+        "mop_cleared",
+        "coarse_folds_before",
+        "folds_out_zero",
+        "floor_out_zero",
+        "l1_move",
         "sqp_iters",
         "wall_s",
         "l2_move",

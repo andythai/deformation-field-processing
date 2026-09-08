@@ -11,6 +11,8 @@ follows [Semantic Versioning](https://semver.org/).
 - The giant-region Schwarz tiler (serial sweeps and `giant_workers` RAS), the coarse-grid warm start, the terminal mop, the harmonic re-seed, the re-anchor stage and the per-window polish are dimension-agnostic (`itertools.product` over per-axis ranges through the phase-1 box helpers; byte-identical in 2D — `benchmarks/windowed_2d_identity.py`: 21 cases, `IDENTITY PASS`). Two 3D defaults, sized from phase 1's cost curve: `giant_tile_3d=16` per axis (16³ voxels is the 2D 64² tile by count) and `mop_margin_3d=6`; the 3D re-anchor tile is `giant_tile_3d`. The phase-1 gates (advisory cap, skipped stages, refused `reanchor` / `polish`) are gone.
 - Measured (`benchmarks/make_hard_crops_3d.py`, four 24³ crops of the raw B0039 field, threshold 0.01, `'tr'`):
 
+  The crop table exercises the tiler on real data (every measured crop clears in one round through the tiler with no mop / re-seed / coarse stage firing); the mop, re-seed, re-anchor and polish have unit-test evidence on 3D and the rows-off arm (`--cfg l2_norows`) is the real-data input that reaches the mop and re-seed.
+
   | case | cfg | giant_tile_3d | mop_margin_3d | folds_in | floor_in | folds_out | floor_out | min_out | damage | rounds | n_windows | giant_regions | mop_windows | reseed_rounds_run | sqp_iters | wall_s | l2_move |
   |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
   | sliver | l2_rows | 16 | 6 | 1094 | 1071 | 0 | 0 | 0.0110 | 0 | 1 | 27 | 1 | 0 | 0 | 699 | 633 | 23.3 |

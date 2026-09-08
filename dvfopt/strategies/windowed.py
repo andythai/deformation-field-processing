@@ -78,7 +78,8 @@ class WindowedWrapperStrategy(Strategy):
         Free-box area above which a merged cluster is cleared by
         overlapping-tile Schwarz decomposition instead of one QP.
     mop_margin : int
-        Margin for the terminal large-window mop pass (0 disables).
+        Margin for the terminal large-window mop pass (0 disables; 3D:
+        the margin is ``mop_margin_3d``; ``mop_margin=0`` still disables).
     mop_margin_3d : int
         Margin of the terminal mop on 3D fields (6; 25 would be a 55³
         window).
@@ -185,7 +186,8 @@ class WindowedWrapperStrategy(Strategy):
         Maximum re-anchor sweeps (stops early once a sweep buys < 1% of
         the L2 move).
     reanchor_tile : int
-        Re-anchor tile size in px (tiles overlap by 8).
+        Re-anchor tile size in px (tiles overlap by 8; 3D fields use
+        ``giant_tile_3d``).
     """
 
     inner: Optional[str] = None

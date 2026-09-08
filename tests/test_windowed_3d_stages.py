@@ -135,7 +135,14 @@ def test_ras_cores_partition_a_3d_inset_region():
 @needs_osqp
 def test_3d_giant_region_is_tiled_and_cleared():
     # a 10^3 blob -> one connected free box of ~16^3 = 4096 > max_window_area=800 -> the tiler;
-    # _fit_tile_nd((16, 16, 16), 10) == 8, step 4 -> 4 tiles per axis of <= 8^3 voxels each
+    # _fit_tile_nd((16, 16, 16), 10) == 8, step 4 -> 4 tiles per axis of <= 8^3 voxels each.
+    # NOTE: the smaller shared fixture (16^3 field, max_window_area=200, giant_tile_3d=6)
+    # was tried here first per the fix-wave's conditional — it clears (giant_regions >= 1,
+    # folds_after == 0, damage == 0) but in 188.67s (not "well under 60s") and its far
+    # planes are no longer untouched (the blob is too close to the field boundary at that
+    # size), so this test keeps the original 22^3 fixture. It also made the RAS test below
+    # impractically slow for an unrelated reason (see its own note), so no test here uses
+    # the smaller fixture.
     phi = _blob((22, 22, 22), (11, 11, 11), (10, 10, 10), amp=0.4, seed=3)
     c = SimplexConstraint3D(shape=phi.shape[1:])
     assert (min_field(c, phi) < THR).sum() > 100
@@ -152,13 +159,21 @@ def test_3d_giant_region_is_tiled_and_cleared():
         reseed_rounds=0,
     )
     assert rep.giant_regions >= 1 and len(rep.giant_boxes[0]) == 6
-    assert rep.n_windows > 1  # more than one tile was solved
+    assert rep.n_windows > 1 and all(
+        engine._box_size(w.patch_box) < engine._box_size(rep.giant_boxes[0]) for w in rep.windows
+    )  # every solved window is a tile strictly inside the giant box
     assert rep.damage == 0 and rep.folds_after == 0
-    assert np.array_equal(out[:, :2], phi[:, :2])  # the inset keeps the far planes untouched
+    # damage == 0 carries the inset invariant; the far planes are a sanity check
+    assert np.array_equal(out[:, :2], phi[:, :2])
 
 
 @needs_osqp
 def test_3d_giant_workers_ras_reaches_zero_folds_damage_zero():
+    # NOTE: the smaller shared fixture (16^3, max_window_area=200, giant_tile_3d=6) tried
+    # here per the fix-wave's conditional does not fit the way the brief assumed: fitted
+    # tile is 5 (not 6), step 1 (not 2), so `giant_tile_fit` produces 2744 near-duplicate
+    # overlapping tiles per sweep (vs 64 below) -- a combinatorial blow-up that made this
+    # RAS test impractically slow. Keeping the original 22^3 fixture here too.
     phi = _blob((22, 22, 22), (11, 11, 11), (10, 10, 10), amp=0.4, seed=3)
     c = SimplexConstraint3D(shape=phi.shape[1:])
     out, rep = windowed_correct(
@@ -328,3 +343,24 @@ def test_3d_polish_runs_and_keeps_zero_folds():
     )
     assert rep.folds_after == 0 and rep.damage == 0
     assert rep.polish_windows >= 1 and rep.polish_accepted > 0
+
+
+@needs_osqp
+def test_3d_mop_margin_zero_still_disables_the_mop():
+    phi = _blob((14, 40, 30), (7, 24, 15), (4, 6, 6), amp=1.4, seed=0)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    _out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        maxiter=10,
+        fallback_maxiter=10,
+        max_rounds=1,
+        reseed_rounds=0,
+        mop_margin=0,
+        **_FORCE_RESIDUAL,
+    )
+    assert rep.damage == 0 and rep.mop_windows == 0

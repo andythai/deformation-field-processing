@@ -1,4 +1,4 @@
-"""3D (SimplexConstraint3D) path of the windowed engine — phase 1 of the 3D port.
+"""3D (SimplexConstraint3D) path of the windowed engine — the 3D port (phases 1-2).
 
 Every test here is additive: the 2D families are covered by the existing
 windowed suites and by benchmarks/windowed_2d_identity.py (byte-identity).
@@ -313,7 +313,7 @@ def test_3d_refuses_the_full_rows_kind():
 
 
 @needs_osqp
-def test_3d_over_cap_region_is_solved_whole_and_counted():
+def test_3d_over_cap_region_is_tiled_and_counted():
     phi = _planted_3d(amp=0.5)
     c = SimplexConstraint3D(shape=phi.shape[1:])
     out, rep = windowed_correct(
@@ -326,7 +326,7 @@ def test_3d_over_cap_region_is_solved_whole_and_counted():
         max_window_area=100,
     )
     assert rep.giant_regions >= 1 and rep.damage == 0
-    assert rep.folds_after == 0  # the cap is advisory in phase 1: the region was solved whole
+    assert rep.folds_after == 0  # the over-cap region went through the tiler (phase 2) and cleared
 
 
 def test_2d_report_keeps_the_3d_fields_at_minus_one():

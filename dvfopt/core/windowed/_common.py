@@ -655,9 +655,12 @@ def windowed_correct(
     with ``mop_margin`` (>> ``margin``): the diagnostic on the densest slices shows
     the plateau is boundary-stuck folds inside the giants that a small window's
     tight frozen boundary can't clear but a large frozen-exterior window can (the
-    analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0`` disables.
+    analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0`` disables
+    (3D: the margin is ``mop_margin_3d``; ``mop_margin=0`` still disables).
     ``mop_margin_3d`` (default 6) is the 3D margin — a residual cluster plus 6 per
-    side is a ~13-17³ window, under the cap.
+    side is a ~13-17³ window — above ``max_window_area`` (so it is solved as ONE
+    attempt, ``ladder=False``, like a big 2D mop window) but under the mop's own
+    ``whole_cap`` of 4x that, so it is not tiled.
 
     Four knobs tune the inner solves (all ``isqp``-only, defaults measured on
     the hard B0039 crops):
@@ -920,7 +923,7 @@ def windowed_correct(
     margin = max(margin, ring)  # inset band must be fold-free margin, never < ring
     shape = phi.shape[1:]
     if is3d:
-        mop_margin = mop_margin_3d  # the 3D mop margin (a cluster + 6 per side stays under the cap)
+        mop_margin = mop_margin_3d if mop_margin else 0  # mop_margin=0 still disables the mop on 3D
     j0 = min_field(constraint, phi)
     orig_fold = j0 < threshold
     rep = SliceReport(folds_before=int(orig_fold.sum()), min_before=float(j0.min()))
@@ -1103,7 +1106,6 @@ def windowed_correct(
         if rep.reseed_rounds_run:
             _fire("reseed", phi)
 
-    # Harmonic re-seed BEFORE the mop (default): the residual the round loop plateaus
     # terminal mop: clear the boundary-stuck residual the round loop plateaued on
     if mop_margin > 0 and not budget_hit:
         before_mop = int(pixel_fold_mask(constraint, phi, threshold).sum())
@@ -1607,6 +1609,11 @@ def _solve_giant_schwarz(
         tuple(v for a, t in enumerate(starts) for v in (t, min(t + tile, inset[2 * a + 1])))
         for starts in itertools.product(*axes)
     ]
+    if (
+        not tiles
+    ):  # an over-cap region thinner than 2 * ring on some interior axis has no inset to tile
+        log_warning(f"windowed_correct: giant region {giant_box} has no tileable inset; skipped")
+        return -1
     gsl = _box_slices(giant_box)
 
     def _nonempty(b):
@@ -1626,6 +1633,8 @@ def _solve_giant_schwarz(
 
             if expired is not None and expired():
                 return prev if prev is not None else -1
+            # every task pickles the whole snapshot (a full-field copy per tile — phase 4's
+            # chunked driver is the fix; giant_workers is opt-in)
             snap = phi.copy()
             args = [
                 (
