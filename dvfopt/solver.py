@@ -402,16 +402,20 @@ class Solver:
 # Convenience top-level function for one-shot use ---------------------------
 
 
-def resolve_auto_objective(init_n_neg: int, init_min: float) -> tuple[str, bool]:
+def resolve_auto_objective(init_n_neg: int, init_min: float, *, dim: int = 2) -> tuple[str, bool]:
     """The ``objective='auto'`` dispatch: ``('l2', False)`` on trap-heavy fields
     (``n_neg >= 3000`` or ``min <= -50``, calibrated on the measured
     l2-wins-both boundary), else ``('none', True)`` — the second element asks
     for the windowed engine's per-window ``polish='l2'``. Single source of
     truth for :func:`correct_dvf` and the GUI.
+
+    ``dim`` is the constraint's spatial dimensionality: the per-window polish is
+    a 2D-measured recipe; on 3D constraints it is not injected until phase 3
+    measures it, so ``wants_polish`` is always ``False`` for ``dim == 3``.
     """
     if init_n_neg >= 3000 or init_min <= -50.0:
         return 'l2', False
-    return 'none', True
+    return 'none', dim == 2
 
 
 def correct_dvf(
@@ -467,7 +471,9 @@ def correct_dvf(
     if objective == 'auto':
         # Fidelity where it wins BOTH axes, speed + polish elsewhere — the
         # boundary lives in :func:`resolve_auto_objective` (shared with the GUI).
-        objective, _wants_polish = resolve_auto_objective(init_n_neg, init_min)
+        objective, _wants_polish = resolve_auto_objective(
+            init_n_neg, init_min, dim=getattr(c, 'dim', 2)
+        )
     if strategy == 'auto':
         strategy = auto_strategy(
             c,
@@ -475,10 +481,7 @@ def correct_dvf(
             init_min,
             objective_label=(objective if isinstance(objective, str) else objective.label),
         )
-    # `c` is in scope whenever _wants_polish is True (it is only set under
-    # objective='auto'); the per-window polish is a 2D-measured recipe and the 3D
-    # engine refuses it (phase 2), so gate the injection on the constraint's dim.
-    if _wants_polish and getattr(c, 'dim', 2) == 2:
+    if _wants_polish:  # the resolver already decided (2D only; see resolve_auto_objective)
         if strategy == 'isqp_windowed' and 'polish' not in strategy_kwargs:
             strategy_kwargs = dict(strategy_kwargs, polish='l2')
         elif (

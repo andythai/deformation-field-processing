@@ -50,6 +50,7 @@ tiles with damage accounting — and deliberately does NOT reuse
 ``core/schwarz/_common.py``, whose crop-Strategy contract cannot freeze rings.
 """
 
+import itertools
 import math
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -103,6 +104,9 @@ class _InnerOpts:
         True  # False -> one attempt per window: no retries, no grow (the mop's big windows)
     )
     orientation_rows: str = 'full'  # 'full' (edge + anti-diagonal rows) | 'edges' (edge rows only)
+    giant_tile_3d: int = (
+        16  # the 3D tile knob; on a 3D field `giant_tile` is RESOLVED to it at entry
+    )
 
 
 @dataclass(frozen=True)
@@ -501,31 +505,31 @@ class SliceReport:
 
 
 def _restrict(phi, factor):
-    """Box-average ``factor`` x ``factor`` blocks of a ``(2, H, W)`` field.
+    """Box-average ``factor``-blocks of a ``(C, *shape)`` field, any rank.
 
-    Displacements are divided by ``factor`` so they stay in COARSE pixel units —
+    Displacements are divided by ``factor`` so they stay in COARSE grid units —
     the coarse field is then an ordinary deformation field on its own grid and the
     same constraint/threshold means the same thing there. A trailing partial block
-    (odd ``H``/``W``) is dropped.
+    along any axis is dropped.
     """
-    hc, wc = (d // factor for d in phi.shape[1:])
-    trimmed = phi[:, : factor * hc, : factor * wc]
-    return trimmed.reshape(2, hc, factor, wc, factor).mean(axis=(2, 4)) / factor
+    coarse = [d // factor for d in phi.shape[1:]]
+    trimmed = phi[(slice(None), *(slice(0, factor * n) for n in coarse))]
+    blocked = trimmed.reshape(phi.shape[0], *(v for n in coarse for v in (n, factor)))
+    return blocked.mean(axis=tuple(range(2, 2 * len(coarse) + 1, 2))) / factor
 
 
 def _prolongate(delta_c, shape, factor):
-    """Bilinear ``factor`` x upsample of a coarse-grid CORRECTION back to ``shape``.
+    """Multilinear ``factor`` x upsample of a coarse-grid CORRECTION back to ``shape``.
 
     Displacements are multiplied by ``factor`` (the inverse of :func:`_restrict`'s
-    rescale). Rows/cols the integer factor cannot cover (odd ``H``/``W``) stay
+    rescale). Planes/rows/cols the integer factor cannot cover (odd sizes) stay
     zero — the fine solve handles that strip itself.
     """
-    h, w = shape
-    out = np.zeros((2, h, w))
-    for c in range(2):
+    out = np.zeros((delta_c.shape[0], *shape))
+    for c in range(delta_c.shape[0]):
         up = ndimage.zoom(delta_c[c] * factor, factor, order=1)
-        hh, ww = min(h, up.shape[0]), min(w, up.shape[1])
-        out[c, :hh, :ww] = up[:hh, :ww]
+        keep = tuple(slice(0, min(n, u)) for n, u in zip(shape, up.shape))
+        out[(c, *keep)] = up[keep]
     return out
 
 
@@ -545,7 +549,7 @@ def _coarse_warm_start(phi, constraint, objective, threshold, factor, margin, ri
     neighbourhood, not damage to untouched area (measured: raw B0039 z16 under a
     40 s budget booked 3 such folds as damage before this).
 
-    Why it pays: the coarse solve is ~1/factor**2 the work and lands the fine
+    Why it pays: the coarse solve is ~1/factor**ndim the work and lands the fine
     windows near a solution, so their SQP loops converge in far fewer iterations.
     Raw B0039 z16 (3890 simplex folds, bilinear rows, objective ``none``,
     maxiter 600): 205 s / 909 SQP iterations — 841 fine plus a 16 s, 68-iteration
@@ -566,8 +570,8 @@ def _coarse_warm_start(phi, constraint, objective, threshold, factor, margin, ri
     allow = np.zeros(phi.shape[1:], bool)
     fine_mask = pixel_fold_mask(constraint, phi, threshold)
     boxes = find_windows(fine_mask, margin, ring)
-    for fy0, fy1, fx0, fx1 in boxes:
-        allow[fy0:fy1, fx0:fx1] = True
+    for box in boxes:
+        allow[_box_slices(box)] = True
     delta[:, ~allow] = 0.0
     return delta, rep_c, boxes
 
@@ -585,6 +589,7 @@ def windowed_correct(
     margin_delta=1e-3,
     max_window_area=3000,
     mop_margin=25,
+    mop_margin_3d=6,
     no_tr_fallback=True,
     fallback_maxiter=200,
     qp_max_iter=1000,
@@ -593,6 +598,7 @@ def windowed_correct(
     giant_max_sweeps=8,
     giant_tile_fit=True,
     giant_workers=0,
+    giant_tile_3d=16,
     qp_backend='hybrid',
     ip_cold=True,
     ip_after_admm_iters=800,
@@ -621,10 +627,8 @@ def windowed_correct(
 ):
     """Correct a full ``(2, H, W)`` slice — or, with
     :class:`~dvfopt.constraints.SimplexConstraint3D`, a ``(3, D, H, W)`` volume
-    (3D port, phase 1: round loop + window ladder, ``'tr'`` step rule, 3D edge
-    rows; the coarse warm start, mop and re-seed are skipped, the giant cap is
-    advisory, ``reanchor`` / ``polish`` raise) — by solving one small window per
-    fold cluster. Returns ``(phi_out, SliceReport)``.
+    (3D: every stage runs (phase 2 of the 3D port)) — by solving one small
+    window per fold cluster. Returns ``(phi_out, SliceReport)``.
 
     ``constraint`` is a registered constraint instance
     (:class:`~dvfopt.constraints.JdetConstraint2D`,
@@ -651,7 +655,13 @@ def windowed_correct(
     with ``mop_margin`` (>> ``margin``): the diagnostic on the densest slices shows
     the plateau is boundary-stuck folds inside the giants that a small window's
     tight frozen boundary can't clear but a large frozen-exterior window can (the
-    analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0`` disables.
+    analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0`` disables
+    (3D: the margin is ``mop_margin_3d``; ``mop_margin=0`` still disables).
+    ``mop_margin_3d`` (default 6) is the 3D margin — a residual cluster plus 6 per
+    side is a ~13-17³ window (2.2k-4.9k voxels, around ``max_window_area`` = 3000:
+    the bigger ones are solved as ONE attempt, ``ladder=False``, like a big 2D mop
+    window) and always under the mop's own ``whole_cap`` of 4x that (12000 ≈ 23³),
+    so it is not tiled.
 
     Four knobs tune the inner solves (all ``isqp``-only, defaults measured on
     the hard B0039 crops):
@@ -686,6 +696,9 @@ def windowed_correct(
     ``giant_tile=64`` ran 362 s / 22 windows / 1 round / no mop vs 685 s /
     264 windows / 3 rounds at 32 — 1.9x faster, zero simplex folds and zero
     damage either way, and a *smaller* move (L2 316 vs 404). 64 is the default.
+    On a 3D field the tile is ``giant_tile_3d`` (default 16 per axis: 16³ voxels
+    is the 2D 64² tile by count; phase 1 measured 11 s per SQP iteration at 17³
+    and 69 s at 25³, so the tile must stay near 16).
 
     ``tr_delta`` (2.0) / ``tr_max`` (16.0) size the ``isqp`` inner's trust
     region — initial radius and cap, in grid units. The default is what every
@@ -760,8 +773,9 @@ def windowed_correct(
     open anyway, so the no-damage invariant holds unchanged and the final damage
     accounting still runs against the ORIGINAL input. It is skipped — leaving the
     path byte-identical to ``coarse_to_fine=False`` — when the field has no folds
-    or when ``min(H, W) < 4 * max(giant_tile, coarse_factor)`` (below that the
-    coarse problem is too small to be a meaningful preview, and its own solve is
+    or when ``min(shape) < 4 * max(tile, coarse_factor)`` where ``tile`` is
+    ``giant_tile`` (2D) or ``giant_tile_3d`` (3D) (below that the coarse
+    problem is too small to be a meaningful preview, and its own solve is
     not amortised; the ``coarse_factor`` leg only bites for absurd factors).
     ``report.coarse_solve_s`` / ``coarse_folds_before`` / ``coarse_folds_after``
     / ``coarse_iters`` / ``warm_folds`` record the stage (``-1`` = skipped).
@@ -870,10 +884,6 @@ def windowed_correct(
             "windowed_correct: step_rule='exact_ls' is 2D-only; using 'tr' on this 3D field"
         )
         step_rule = 'tr'
-    if is3d and (reanchor != 'none' or polish is not None):
-        raise ValueError(
-            'reanchor and polish are not yet supported on 3D fields (3D port, phase 2)'
-        )
     if is3d and orientation_delta is not None and orientation_rows != 'edges':
         raise ValueError("3D orientation rows: only kind='edges' exists (no convexity rows in 3D)")
     if orientation_delta is not None:
@@ -889,7 +899,7 @@ def windowed_correct(
         fallback_maxiter,
         qp_max_iter,
         qp_max_iter_fallback,
-        giant_tile,
+        giant_tile_3d if is3d else giant_tile,
         giant_max_sweeps,
         giant_tile_fit,
         qp_backend,
@@ -906,6 +916,7 @@ def windowed_correct(
         giant_workers=giant_workers,
         polish=polish,
         polish_maxiter=polish_maxiter,
+        giant_tile_3d=giant_tile_3d,
     )
     objective = L2Objective() if objective is None else objective
     phi = np.array(phi_in, dtype=np.float64, copy=True)
@@ -913,10 +924,7 @@ def windowed_correct(
     margin = max(margin, ring)  # inset band must be fold-free margin, never < ring
     shape = phi.shape[1:]
     if is3d:
-        # Phase 1 of the 3D port: the round loop + window ladder only. The coarse warm
-        # start, the terminal mop and the harmonic re-seed are 2D-shaped stages (phase
-        # 2); their report fields keep their did-not-run values.
-        coarse_to_fine, mop_margin, reseed_rounds = False, 0, 0
+        mop_margin = mop_margin_3d if mop_margin else 0  # mop_margin=0 still disables the mop on 3D
     j0 = min_field(constraint, phi)
     orig_fold = j0 < threshold
     rep = SliceReport(folds_before=int(orig_fold.sum()), min_before=float(j0.min()))
@@ -955,7 +963,11 @@ def windowed_correct(
     # Coarse-grid warm start: solve small, prolongate the correction, then run the
     # normal fine loop from the warmed field. Skipped when there is nothing to do
     # or the field is too small for the coarse problem to be a useful preview.
-    if coarse_to_fine and rep.folds_before > 0 and min(shape) >= 4 * max(giant_tile, coarse_factor):
+    if (
+        coarse_to_fine
+        and rep.folds_before > 0
+        and min(shape) >= 4 * max(opts.giant_tile, coarse_factor)
+    ):
         t_coarse = time.perf_counter()
         delta, rep_c, warm_boxes = _coarse_warm_start(
             phi,
@@ -973,6 +985,7 @@ def windowed_correct(
                 margin_delta=margin_delta,
                 max_window_area=max_window_area,
                 mop_margin=mop_margin,
+                mop_margin_3d=mop_margin_3d,
                 time_budget_s=time_budget_s,
                 verbose=verbose,
                 **_engine_kwargs(opts),
@@ -994,7 +1007,6 @@ def windowed_correct(
 
     budget_hit = False
     prev_nfold = None
-    giant_warned = False
     for _rnd in range(max_rounds):
         if _expired():
             budget_hit = True
@@ -1019,37 +1031,28 @@ def windowed_correct(
             # damage — so damage=0 is by construction, not merely for feasible solves.
             touched[_box_slices(_pad_box(box, shape, ring))] = True
             if _box_size(box) > max_window_area:
+                # too big for one QP -> overlapping-tile Schwarz decomposition
                 rep.giant_regions += 1
                 rep.giant_boxes.append(box)
-                if not is3d:
-                    # too big for one QP -> overlapping-tile Schwarz decomposition
-                    giant_w0 = len(rep.windows)
-                    _solve_giant_schwarz(
-                        phi,
-                        constraint,
-                        box,
-                        threshold,
-                        objective,
-                        maxiter,
-                        ring,
-                        rep,
-                        margin_delta,
-                        inner=inner,
-                        opts=opts,
-                        expired=_expired,
-                    )
-                    if record_history:
-                        rep.history.append(_stage_entry("giant", giant_w0))
-                    _fire("giant", phi)
-                    continue
-                if not giant_warned:
-                    # Phase 1 of the 3D port: the voxel cap is advisory — the region is
-                    # solved whole (the 3D tiler is phase 2). Warned once per call.
-                    giant_warned = True
-                    log_warning(
-                        f"windowed_correct: 3D region of {_box_size(box)} voxels exceeds "
-                        f"max_window_area={max_window_area}; solving it whole (3D tiler pending)"
-                    )
+                giant_w0 = len(rep.windows)
+                _solve_giant_schwarz(
+                    phi,
+                    constraint,
+                    box,
+                    threshold,
+                    objective,
+                    maxiter,
+                    ring,
+                    rep,
+                    margin_delta,
+                    inner=inner,
+                    opts=opts,
+                    expired=_expired,
+                )
+                if record_history:
+                    rep.history.append(_stage_entry("giant", giant_w0))
+                _fire("giant", phi)
+                continue
             _solve_window(
                 phi,
                 constraint,
@@ -1093,6 +1096,7 @@ def windowed_correct(
                 margin_delta=margin_delta,
                 max_window_area=max_window_area,
                 mop_margin=mop_margin,
+                mop_margin_3d=mop_margin_3d,
                 verbose=verbose,
                 **_engine_kwargs(opts),
             ),
@@ -1103,7 +1107,6 @@ def windowed_correct(
         if rep.reseed_rounds_run:
             _fire("reseed", phi)
 
-    # Harmonic re-seed BEFORE the mop (default): the residual the round loop plateaus
     # terminal mop: clear the boundary-stuck residual the round loop plateaued on
     if mop_margin > 0 and not budget_hit:
         before_mop = int(pixel_fold_mask(constraint, phi, threshold).sum())
@@ -1143,7 +1146,14 @@ def windowed_correct(
                 np.asarray(phi_in, dtype=np.float64),
                 constraint,
                 threshold,
-                _ReanchorOpts(reanchor, reanchor_maxiter, reanchor_sweeps, reanchor_tile),
+                _ReanchorOpts(
+                    reanchor,
+                    reanchor_maxiter,
+                    reanchor_sweeps,
+                    giant_tile_3d
+                    if is3d
+                    else reanchor_tile,  # the 3D re-anchor tile is the 3D giant tile
+                ),
                 margin_delta,
                 rep,
                 inner,
@@ -1224,8 +1234,8 @@ def _mop_pass(
     clears folds a small window can't. Solved WHOLE (tiling would just re-introduce
     the frozen boundaries) up to a generous cap; the rare over-cap cluster falls back
     to Schwarz. Big windows may overlap — harmless, each enforces its own footprint.
-    Sweeps until no further progress, i.e. the genuine local floor."""
-    H, W = phi.shape[1:]
+    Sweeps until no further progress, i.e. the genuine local floor. Any rank."""
+    shape = phi.shape[1:]
     whole_cap = 4 * max_window_area  # the mop is allowed much larger single QPs
     for _sweep in range(max_sweeps):
         mask = pixel_fold_mask(constraint, phi, threshold)
@@ -1233,13 +1243,11 @@ def _mop_pass(
         if n == 0:
             break
         lbl, _ = ndimage.label(mask)  # raw residual clusters (per connected component)
-        for sy, sx in ndimage.find_objects(lbl):
-            fy0, fy1 = max(0, sy.start - mop_margin), min(H, sy.stop + mop_margin)
-            fx0, fx1 = max(0, sx.start - mop_margin), min(W, sx.stop + mop_margin)
-            box = (fy0, fy1, fx0, fx1)
-            touched[max(0, fy0 - ring) : fy1 + ring, max(0, fx0 - ring) : fx1 + ring] = True
+        for sl in ndimage.find_objects(lbl):
+            box = _pad_box(tuple(v for s in sl for v in (s.start, s.stop)), shape, mop_margin)
+            touched[_box_slices(_pad_box(box, shape, ring))] = True
             rep.mop_windows += 1
-            if (fy1 - fy0) * (fx1 - fx0) > whole_cap:
+            if _box_size(box) > whole_cap:
                 _solve_giant_schwarz(
                     phi,
                     constraint,
@@ -1261,7 +1269,7 @@ def _mop_pass(
                 # rotated-branch residual for 12 367 of 15 657 s (79%), and the re-seed
                 # stage then cleared it in 7 s. Small mop windows keep the full ladder
                 # (the sliver-type residual needs it and is cheap).
-                big = (fy1 - fy0) * (fx1 - fx0) > max_window_area
+                big = _box_size(box) > max_window_area
                 _solve_window(
                     phi,
                     constraint,
@@ -1292,8 +1300,8 @@ def _reanchor_tile(
     sub = build_subproblem(constraint, phi, box, threshold, None, margin_delta, free_extra=moved)
     if sub.free_idx.size == 0 or sub.n_enforced == 0:
         return False
-    py0, py1, px0, px1 = sub.patch_box
-    ref = np.asarray(sub.constraint.flatten(np.ascontiguousarray(phi_ref[:, py0:py1, px0:px1])))
+    psl = (slice(None), *_box_slices(sub.patch_box))
+    ref = np.asarray(sub.constraint.flatten(np.ascontiguousarray(phi_ref[psl])))
     # Same helper the engine builds its own objective with, re-anchored at the INPUT
     # patch instead of the current one (L1's eps rides on the Objective, as there).
     obj, grad, hess = _objective_fns(ref, obj_ref)
@@ -1317,7 +1325,7 @@ def _reanchor_tile(
     if sub.cons(x).min() < -margin_delta + _REANCHOR_TOL or obj(x) >= obj(sub.flat0):
         return False
     patch_out = np.asarray(sub.constraint.unflatten(x))
-    dst = phi[:, py0:py1, px0:px1]
+    dst = phi[psl]
     dst[:, sub.free_mask] = patch_out[:, sub.free_mask]
     return True
 
@@ -1331,7 +1339,8 @@ def _reanchor_pass(
     keeps the windowed isqp out of the objective-basin traps a distance anchor pins
     it in, but leaves the correction close to the input only by construction. This
     stage recovers the fidelity afterwards, when there is no fold left to trap it:
-    tile the MOVED region, re-solve each tile minimising the distance to the input
+    tile the MOVED region (``reanchor_tile`` in 2D, ``giant_tile_3d`` in 3D,
+    overlapping by 8), re-solve each tile minimising the distance to the input
     under the same constraint rows, and accept the tile only if every enforced row
     stays at or above ``threshold`` (per-tile verify-and-revert).
 
@@ -1349,9 +1358,12 @@ def _reanchor_pass(
         return
     obj_ref = make_objective(ropts.kind)
     tile = max(1, ropts.tile)
-    step = max(1, tile - _REANCHOR_OVERLAP)  # overlap so a seam is a neighbour's interior
-    ys, xs = np.nonzero(moved)
-    y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+    # overlap so a seam is a neighbour's interior; same floor as the tiler: the 3D
+    # re-anchor tile is giant_tile_3d (16 -> step 8; 8 -> step 4, not 1)
+    step = max(tile - _REANCHOR_OVERLAP, tile // 2, 1)
+    pts = np.nonzero(moved)
+    lo = [int(p.min()) for p in pts]
+    hi = [int(p.max()) + 1 for p in pts]
 
     def l2_move():
         return float(np.linalg.norm((phi - phi_ref).ravel()))
@@ -1359,30 +1371,29 @@ def _reanchor_pass(
     rep.reanchor_l2_before = rep.reanchor_l2_after = prev = l2_move()
     for _sweep in range(max(0, ropts.sweeps)):
         rep.reanchor_sweeps_run += 1
-        for ty in range(y0, y1, step):
-            for tx in range(x0, x1, step):
-                box = (ty, min(ty + tile, y1), tx, min(tx + tile, x1))
-                if not moved[box[0] : box[1], box[2] : box[3]].any():
-                    continue
-                if expired is not None and expired():
-                    rep.reanchor_l2_after = l2_move()
-                    return
-                rep.reanchor_tiles += 1
-                rep.reanchor_accepted += int(
-                    _reanchor_tile(
-                        phi,
-                        phi_ref,
-                        constraint,
-                        box,
-                        threshold,
-                        obj_ref,
-                        moved,
-                        ropts,
-                        margin_delta,
-                        inner,
-                        opts,
-                    )
+        for starts in itertools.product(*(range(a, b, step) for a, b in zip(lo, hi))):
+            box = tuple(v for t, b in zip(starts, hi) for v in (t, min(t + tile, b)))
+            if not moved[_box_slices(box)].any():
+                continue
+            if expired is not None and expired():
+                rep.reanchor_l2_after = l2_move()
+                return
+            rep.reanchor_tiles += 1
+            rep.reanchor_accepted += int(
+                _reanchor_tile(
+                    phi,
+                    phi_ref,
+                    constraint,
+                    box,
+                    threshold,
+                    obj_ref,
+                    moved,
+                    ropts,
+                    margin_delta,
+                    inner,
+                    opts,
                 )
+            )
         cur = l2_move()
         rep.reanchor_l2_after = cur
         if prev - cur < _REANCHOR_MIN_GAIN * prev:
@@ -1398,37 +1409,45 @@ def _engine_kwargs(opts):
 
 
 def _harmonic_fill(phi, mask):
-    """Replace ``phi[:, mask]`` by the discrete-harmonic (4-neighbour Laplacian)
-    interpolation of ``phi`` on the mask's boundary, in place. One sparse solve per
-    channel over the masked pixels (a few hundred on real residuals)."""
-    H, W = mask.shape
-    ys, xs = np.nonzero(mask)
-    n = len(ys)
+    """Replace ``phi[:, mask]`` by the discrete-harmonic (2·ndim-neighbour Laplacian)
+    interpolation of ``phi`` on the mask's boundary, in place — any rank. One sparse
+    solve per channel over the masked grid points (a few hundred on real residuals).
+    The neighbour order (last axis first, ``+1`` before ``-1``) is the 2D engine's
+    ``(0, 1), (0, -1), (1, 0), (-1, 0)`` and fixes the boundary sum's float order."""
+    shape = mask.shape
+    ndim = len(shape)
+    pts = np.nonzero(mask)
+    n = len(pts[0])
     if n == 0:
         return
-    idx = np.full((H, W), -1, dtype=np.int64)
-    idx[ys, xs] = np.arange(n)
+    idx = np.full(shape, -1, dtype=np.int64)
+    idx[pts] = np.arange(n)
+    offsets = [
+        tuple((d if a == ax else 0) for a in range(ndim))
+        for ax in reversed(range(ndim))
+        for d in (1, -1)
+    ]
     rows, cols, vals = [], [], []
     rhs = np.zeros((phi.shape[0], n))
-    for k, (y, x) in enumerate(zip(ys, xs)):
+    for k, p in enumerate(zip(*pts)):
         deg = 0
-        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-            y2, x2 = y + dy, x + dx
-            if not (0 <= y2 < H and 0 <= x2 < W):
+        for off in offsets:
+            q = tuple(int(pi) + oi for pi, oi in zip(p, off))
+            if not all(0 <= qi < ni for qi, ni in zip(q, shape)):
                 continue
             deg += 1
-            if mask[y2, x2]:
+            if mask[q]:
                 rows.append(k)
-                cols.append(idx[y2, x2])
+                cols.append(int(idx[q]))
                 vals.append(-1.0)
             else:
-                rhs[:, k] += phi[:, y2, x2]
+                rhs[:, k] += phi[(slice(None), *q)]
         rows.append(k)
         cols.append(k)
         vals.append(float(deg))
     lap = sparse.csc_matrix((vals, (rows, cols)), shape=(n, n))
     for ch in range(phi.shape[0]):
-        phi[ch, ys, xs] = spsolve(lap, rhs[ch])
+        phi[(ch, *pts)] = spsolve(lap, rhs[ch])
 
 
 def _reseed_stage(
@@ -1448,13 +1467,14 @@ def _reseed_stage(
 ):
     """Harmonic re-seed of every residual fold cluster, then a recursive polish; in place.
 
-    A residual cell's corner pixels (the cell and its +1 row/column) dilated by
-    ``radius`` form the re-seed mask; its interior is replaced by the harmonic
-    interpolation of the ring, which puts the cluster back on the ring's orientation
-    branch. The polish is :func:`windowed_correct` on the re-seeded field with this
-    stage off (never recursive) and the coarse warm start off; its windows' patch
-    boxes join ``touched`` so the outer damage accounting stays exact. Stops when
-    the field is fold-free, the deadline passes, or a round makes no progress.
+    A residual cell's corner pixels (the cell and its +1 shift along every axis)
+    dilated by ``radius`` form the re-seed mask; its interior is replaced by the
+    harmonic interpolation of the ring, which puts the cluster back on the ring's
+    orientation branch. The polish is :func:`windowed_correct` on the re-seeded
+    field with this stage off (never recursive) and the coarse warm start off; its
+    windows' patch boxes join ``touched`` so the outer damage accounting stays
+    exact. Stops when the field is fold-free, the deadline passes, or a round makes
+    no progress. Any rank.
     """
     fold0 = pixel_fold_mask(constraint, phi, threshold)
     if not fold0.any():
@@ -1467,10 +1487,10 @@ def _reseed_stage(
         if nf == 0 or expired():
             break
         rep.reseed_rounds_run += 1
-        corners = fold.copy()
-        corners[1:, :] |= fold[:-1, :]
-        corners[:, 1:] |= fold[:, :-1]
-        corners[1:, 1:] |= fold[:-1, :-1]
+        # a cell's 2**ndim corner grid points ({0, +1} offsets per axis)
+        corners = ndimage.binary_dilation(
+            fold, structure=np.ones((2,) * fold.ndim, bool), origin=-1
+        )
         mask = ndimage.binary_dilation(corners, iterations=radius)
         _harmonic_fill(phi, mask)
         rep.reseed_px += int(mask.sum())
@@ -1488,9 +1508,8 @@ def _reseed_stage(
             **{k: v for k, v in sub_kw.items() if k != "ladder"},
         )
         phi[...] = out
-        for w in rep_in.windows:  # the polish's enforced footprints
-            py0, px0 = max(0, w.fy0 - ring), max(0, w.fx0 - ring)
-            touched[py0 : py0 + w.ph, px0 : px0 + w.pw] = True
+        for w in rep_in.windows:  # the polish's enforced footprints (= the padded patches)
+            touched[_box_slices(w.patch_box)] = True
         rep.windows.extend(rep_in.windows)
         rep.backend_fallbacks += rep_in.backend_fallbacks
         rep.patience_fallbacks += rep_in.patience_fallbacks
@@ -1499,6 +1518,16 @@ def _reseed_stage(
             break  # no progress -> stop rather than churn
         prev = nf_after
     rep.reseed_folds_after = int(pixel_fold_mask(constraint, phi, threshold).sum())
+
+
+def _fit_tile_nd(extents, target, lo_frac=0.75, hi_frac=1.5):
+    """:func:`_fit_tile` over a region's per-axis extents (any rank): the largest tile
+    no bigger than ``target`` that covers the LONGEST extent with an integer number of
+    near-equal tiles, clamped to ``[lo_frac, hi_frac] * target``."""
+    longest = max(int(v) for v in extents)
+    n = max(1, -(-longest // target))  # tiles along the longest side
+    tile = -(-longest // n)
+    return int(min(max(tile, math.ceil(lo_frac * target)), math.ceil(hi_frac * target)))
 
 
 def _fit_tile(h, w, target, lo_frac=0.75, hi_frac=1.5):
@@ -1517,9 +1546,7 @@ def _fit_tile(h, w, target, lo_frac=0.75, hi_frac=1.5):
     guarantee: tiles step by ``tile - overlap``, so exact integer coverage of
     the side is approximate, and only the region's longest side is fitted.
     """
-    n = max(1, -(-max(h, w) // target))  # tiles along the longest side
-    tile = -(-max(h, w) // n)
-    return int(min(max(tile, math.ceil(lo_frac * target)), math.ceil(hi_frac * target)))
+    return _fit_tile_nd((h, w), target, lo_frac, hi_frac)
 
 
 def _solve_giant_schwarz(
@@ -1554,27 +1581,39 @@ def _solve_giant_schwarz(
     The inset band is fold-free margin (needs ``margin >= ring``), so insetting
     leaves no fold unfixed. Image-border edges are not inset — no "outside" there.
     Without the inset, an infeasible edge-tile solve can leave a boundary guard row
-    just outside the giant violated -> a damage fold (observed on B0039 z=0)."""
+    just outside the giant violated -> a damage fold (observed on B0039 z=0).
+
+    Any rank: the giant box, the inset region, the tiles and the RAS cores are
+    per-axis ``(lo, hi)`` pairs."""
     opts = _InnerOpts() if opts is None else opts
     tile, max_sweeps = opts.giant_tile, opts.giant_max_sweeps
-    H, W = phi.shape[1:]
-    fy0, fy1, fx0, fx1 = giant_box
+    shape = phi.shape[1:]
+    ndim = len(shape)
+    extents = [giant_box[2 * a + 1] - giant_box[2 * a] for a in range(ndim)]
     if opts.giant_tile_fit:
-        tile = _fit_tile(fy1 - fy0, fx1 - fx0, tile)
-    it0 = fy0 + (ring if fy0 > 0 else 0)  # inset interior edges; keep image borders
-    it1 = fy1 - (ring if fy1 < H else 0)
-    ix0 = fx0 + (ring if fx0 > 0 else 0)
-    ix1 = fx1 - (ring if fx1 < W else 0)
+        tile = _fit_tile_nd(extents, tile)
+    inset = []
+    for a, n in enumerate(shape):  # inset interior faces by the ring; keep image borders
+        lo, hi = giant_box[2 * a], giant_box[2 * a + 1]
+        inset += [lo + (ring if lo > 0 else 0), hi - (ring if hi < n else 0)]
+    inset = tuple(inset)
     overlap = 2 * ring + 2  # free regions must overlap so seams are some tile's interior
-    step = max(1, tile - overlap)
-    tiles = [
-        (ty, min(ty + tile, it1), tx, min(tx + tile, ix1))
-        for ty in range(it0, it1, step)
-        for tx in range(ix0, ix1, step)
-    ]
+    # floor: a tile near the overlap must not degenerate to a 1-voxel step (3D tiles are small)
+    step = max(tile - overlap, tile // 2, 1)
+    tiles = _giant_tiles(inset, tile, step, shape, ring)
+    if (
+        not tiles
+    ):  # an over-cap region thinner than 2 * ring on some interior axis has no inset to tile
+        log_warning(f"windowed_correct: giant region {giant_box} has no tileable inset; skipped")
+        return -1
+    gsl = _box_slices(giant_box)
+
+    def _nonempty(b):
+        return all(b[2 * a + 1] > b[2 * a] for a in range(ndim))
+
     prev = None
     ras = int(getattr(opts, 'giant_workers', 0) or 0)
-    cores = _ras_cores(tiles, step, (it0, it1, ix0, ix1)) if ras > 1 else None
+    cores = _ras_cores(tiles, step, inset) if ras > 1 else None
     for _sweep in range(max_sweeps):
         if ras > 1:
             # Restricted additive Schwarz: every tile solves from the SAME
@@ -1586,6 +1625,8 @@ def _solve_giant_schwarz(
 
             if expired is not None and expired():
                 return prev if prev is not None else -1
+            # every task pickles the whole snapshot (a full-field copy per tile — phase 4's
+            # chunked driver is the fix; giant_workers is opt-in)
             snap = phi.copy()
             args = [
                 (
@@ -1602,15 +1643,14 @@ def _solve_giant_schwarz(
                     opts,
                 )
                 for tb, core in zip(tiles, cores)
-                if tb[1] > tb[0] and tb[3] > tb[2] and core[1] > core[0] and core[3] > core[2]
+                if _nonempty(tb) and _nonempty(core)
             ]
             for core, vals, sub_rep in pool_map(_ras_tile_task, args, ras):
-                cy0, cy1, cx0, cx1 = core
-                phi[:, cy0:cy1, cx0:cx1] = vals
+                phi[(slice(None), *_box_slices(core))] = vals
                 rep.windows.extend(sub_rep.windows)
                 rep.backend_fallbacks += sub_rep.backend_fallbacks
                 rep.patience_fallbacks += sub_rep.patience_fallbacks
-            nf = int((min_field(constraint, phi)[fy0:fy1, fx0:fx1] < threshold).sum())
+            nf = int((min_field(constraint, phi)[gsl] < threshold).sum())
             if nf == 0 or (prev is not None and nf >= prev):
                 return nf
             prev = nf
@@ -1621,7 +1661,7 @@ def _solve_giant_schwarz(
                 # a giant region is many window solves, not one (measured: a 40 s
                 # budget ran 189 s on raw B0039 z16 before this check existed).
                 return prev if prev is not None else -1
-            if tb[1] > tb[0] and tb[3] > tb[2]:
+            if _nonempty(tb):
                 _solve_window(
                     phi,
                     constraint,
@@ -1636,21 +1676,56 @@ def _solve_giant_schwarz(
                     inner=inner,
                     opts=opts,
                 )
-        nf = int((min_field(constraint, phi)[fy0:fy1, fx0:fx1] < threshold).sum())
+        nf = int((min_field(constraint, phi)[gsl] < threshold).sum())
         if nf == 0 or (prev is not None and nf >= prev):
             return nf  # cleared, or no further progress (geometric floor)
         prev = nf
     return prev if prev is not None else 0
 
 
-def _ras_cores(tiles, step, inset):
-    """Disjoint step-grid cores of the tiles: tile (ty0, ty1, tx0, tx1) laid at
-    step intervals owns ``[ty0, min(ty0 + step, it1)) x [tx0, min(tx0 + step, ix1))``
-    — a partition of the inset region (tiles overlap, cores do not)."""
-    it0, it1, ix0, ix1 = inset
+def _giant_tiles(inset, tile, step, shape, ring):
+    """The tile boxes covering an inset region (any rank): starts every ``step`` per
+    axis, each tile ``tile`` long and clipped to the inset; ``itertools.product`` iterates
+    axis 0 outermost — the 2D ``for ty ... for tx`` order. A trailing start whose
+    ring-padded patch would be thinner than the constraint's 3-voxel minimum on that
+    axis (a 1-voxel remainder strip on an image border, where the pad is clipped) is
+    dropped: the strip is already inside the previous tile (``tile - step >= 2``), and
+    a window that thin is refused by ``validate_dvf`` (hit on the 17³ B0039
+    sub-volume: inset 17, fitted tile 12, step 8 -> starts 0, 8, 16)."""
+    ndim = len(shape)
+    axes = []
+    for a in range(ndim):
+        lo, hi = inset[2 * a], inset[2 * a + 1]
+        starts = list(range(lo, hi, step))
+        while len(starts) > 1:
+            s = starts[-1]
+            if min(shape[a], min(s + tile, hi) + ring) - max(0, s - ring) >= 3:
+                break
+            starts.pop()
+        axes.append(starts)
     return [
-        (ty0, min(ty0 + step, it1), tx0, min(tx0 + step, ix1)) for (ty0, _ty1, tx0, _tx1) in tiles
+        tuple(v for a, t in enumerate(starts) for v in (t, min(t + tile, inset[2 * a + 1])))
+        for starts in itertools.product(*axes)
     ]
+
+
+def _ras_cores(tiles, step, inset):
+    """Disjoint step-grid cores of the tiles (any rank): a tile starting at ``t`` on an
+    axis owns ``[t, next start)`` there, the last start on each axis owning up to the
+    inset edge — a partition of the inset region (tiles overlap, cores do not). With a
+    full ``step`` grid of starts this is ``[t, min(t + step, inset_hi))``; when
+    :func:`_giant_tiles` dropped a trailing strip, the previous tile's core absorbs it."""
+    ndim = len(inset) // 2
+    nxt = []
+    for a in range(ndim):
+        starts = sorted({tb[2 * a] for tb in tiles})
+        nxt.append(
+            {
+                t: (starts[i + 1] if i + 1 < len(starts) else inset[2 * a + 1])
+                for i, t in enumerate(starts)
+            }
+        )
+    return [tuple(v for a in range(ndim) for v in (tb[2 * a], nxt[a][tb[2 * a]])) for tb in tiles]
 
 
 def _ras_tile_task(args):
@@ -1678,8 +1753,8 @@ def _ras_tile_task(args):
         inner=inner,
         opts=opts,
     )
-    cy0, cy1, cx0, cx1 = core
-    return core, phi[:, cy0:cy1, cx0:cx1].copy(), rep
+    csl = _box_slices(core)
+    return core, phi[(slice(None), *csl)].copy(), rep
 
 
 def _solve_window(

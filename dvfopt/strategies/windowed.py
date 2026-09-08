@@ -34,12 +34,8 @@ from dvfopt.strategies.base import Strategy, register_strategy
 class WindowedWrapperStrategy(Strategy):
     """Cluster-windowed no-damage decomposition around an inner window solver.
 
-    Since the 3D port's phase 1 the engine also accepts
-    :class:`~dvfopt.constraints.SimplexConstraint3D` on ``(3, D, H, W)``
-    fields: the round loop + window ladder with the 3D axial edge rows
-    and the ``'tr'`` step rule (``'exact_ls'`` degrades); the coarse
-    warm start, mop and re-seed are skipped, the giant cap is advisory,
-    ``reanchor`` / ``polish`` raise. Jdet3D stays with
+    Since the 3D port's phase 2 every stage runs on 3D fields with the
+    ``giant_tile_3d`` / ``mop_margin_3d`` defaults. Jdet3D stays with
     ``SLSQPWindowedStrategy``.
 
     Detects fold clusters, solves each inside a small window with a
@@ -82,7 +78,11 @@ class WindowedWrapperStrategy(Strategy):
         Free-box area above which a merged cluster is cleared by
         overlapping-tile Schwarz decomposition instead of one QP.
     mop_margin : int
-        Margin for the terminal large-window mop pass (0 disables).
+        Margin for the terminal large-window mop pass (0 disables; 3D:
+        the margin is ``mop_margin_3d``; ``mop_margin=0`` still disables).
+    mop_margin_3d : int
+        Margin of the terminal mop on 3D fields (6; 25 would be a 51³
+        window: 1 + 2 * 25 = 51).
     time_budget_s : float, optional
         Wall-clock budget, checked at round/window boundaries.
     no_tr_fallback : bool
@@ -125,6 +125,9 @@ class WindowedWrapperStrategy(Strategy):
         alignment (sweep-round count), not size: on the raw B0039 z16
         giant the fitted 51 and the lucky 64 both take 1 round, while
         56 and 80 take 2 (~600 s vs ~350 s). ``False`` = literal tile.
+    giant_tile_3d : int
+        Tile per axis for the 3D tiler (16: the 2D 64² tile by voxel
+        count; phase 1's cost curve says windows must stay near 17³).
     tr_delta, tr_max : float
         Initial radius / cap of the ``isqp`` inner's trust region, in grid
         units. 2.0 is what every measured windowed number was taken at;
@@ -160,7 +163,8 @@ class WindowedWrapperStrategy(Strategy):
         B0039 z16: 205 s / 909 SQP iterations (841 fine + a 16 s,
         68-iteration coarse solve) vs 283 s / 1320 cold, at a slightly
         smaller L2 move (320.6 vs 325.1). Skipped — byte-identical to ``False`` — on a fold-free
-        field or one with ``min(H, W) < 4 * giant_tile``.
+        field or one with ``min(shape) < 4 * tile`` (``giant_tile`` in 2D,
+        ``giant_tile_3d`` in 3D).
     coarse_factor : int
         Coarsening factor for that stage (box-average blocks).
     reanchor : str
@@ -182,7 +186,8 @@ class WindowedWrapperStrategy(Strategy):
         Maximum re-anchor sweeps (stops early once a sweep buys < 1% of
         the L2 move).
     reanchor_tile : int
-        Re-anchor tile size in px (tiles overlap by 8).
+        Re-anchor tile size in px (tiles overlap by 8; 3D fields use
+        ``giant_tile_3d``).
     """
 
     inner: Optional[str] = None
@@ -192,6 +197,7 @@ class WindowedWrapperStrategy(Strategy):
     margin_delta: float = 1e-3
     max_window_area: int = 3000
     mop_margin: int = 25
+    mop_margin_3d: int = 6
     time_budget_s: Optional[float] = None
     no_tr_fallback: bool = True
     fallback_maxiter: int = 200
@@ -200,6 +206,7 @@ class WindowedWrapperStrategy(Strategy):
     giant_tile: int = 64
     giant_max_sweeps: int = 8
     giant_tile_fit: bool = True
+    giant_tile_3d: int = 16
     qp_backend: str = 'hybrid'
     ip_cold: bool = True
     ip_after_admm_iters: int = 800
@@ -263,6 +270,7 @@ class WindowedWrapperStrategy(Strategy):
             margin_delta=self.margin_delta,
             max_window_area=self.max_window_area,
             mop_margin=self.mop_margin,
+            mop_margin_3d=self.mop_margin_3d,
             no_tr_fallback=self.no_tr_fallback,
             fallback_maxiter=self.fallback_maxiter,
             qp_max_iter=self.qp_max_iter,
@@ -270,6 +278,7 @@ class WindowedWrapperStrategy(Strategy):
             giant_tile=self.giant_tile,
             giant_max_sweeps=self.giant_max_sweeps,
             giant_tile_fit=self.giant_tile_fit,
+            giant_tile_3d=self.giant_tile_3d,
             qp_backend=self.qp_backend,
             ip_cold=self.ip_cold,
             ip_after_admm_iters=self.ip_after_admm_iters,

@@ -1,4 +1,4 @@
-"""3D (SimplexConstraint3D) path of the windowed engine — phase 1 of the 3D port.
+"""3D (SimplexConstraint3D) path of the windowed engine — the 3D port (phases 1-2).
 
 Every test here is additive: the 2D families are covered by the existing
 windowed suites and by benchmarks/windowed_2d_identity.py (byte-identity).
@@ -240,7 +240,7 @@ def test_3d_planted_folds_no_damage_and_untouched_voxels_bit_identical(objective
     # 3D certificate fields are filled; the 2D ones stay at their defaults
     assert rep.best_diag_floor_after >= 0 and rep.best_diag_floor_after_zero >= 0
     assert rep.folds_after_zero >= 0 and rep.best_diag_floor_after <= rep.folds_after
-    assert rep.coarse_folds_before == -1 and rep.mop_windows == 0 and rep.reseed_rounds_run == 0
+    assert rep.coarse_folds_before == -1  # too small for the coarse stage (min(shape) < 64)
 
 
 @needs_osqp
@@ -305,19 +305,15 @@ def test_3d_exact_ls_default_degrades_to_tr(monkeypatch):
     assert seen and set(seen) == {"tr"}
 
 
-def test_3d_refuses_the_unported_stages():
+def test_3d_refuses_the_full_rows_kind():
     phi = np.zeros((3, 6, 8, 8))
     c = SimplexConstraint3D(shape=phi.shape[1:])
-    with pytest.raises(ValueError, match="3D"):
-        windowed_correct(phi, "isqp", constraint=c, threshold=THR, reanchor="l2")
-    with pytest.raises(ValueError, match="3D"):
-        windowed_correct(phi, "isqp", constraint=c, threshold=THR, polish="l2")
     with pytest.raises(ValueError, match="edges"):
         windowed_correct(phi, "isqp", constraint=c, threshold=THR, orientation_rows="full")
 
 
 @needs_osqp
-def test_3d_over_cap_region_is_solved_whole_and_counted():
+def test_3d_over_cap_region_is_tiled_and_counted():
     phi = _planted_3d(amp=0.5)
     c = SimplexConstraint3D(shape=phi.shape[1:])
     out, rep = windowed_correct(
@@ -330,7 +326,7 @@ def test_3d_over_cap_region_is_solved_whole_and_counted():
         max_window_area=100,
     )
     assert rep.giant_regions >= 1 and rep.damage == 0
-    assert rep.folds_after == 0  # the cap is advisory in phase 1: the region was solved whole
+    assert rep.folds_after == 0  # the over-cap region went through the tiler (phase 2) and cleared
 
 
 def test_2d_report_keeps_the_3d_fields_at_minus_one():
@@ -362,8 +358,13 @@ def test_3d_solver_composition_and_string_recipe():
 @needs_osqp
 def test_3d_auto_objective_recipe_does_not_inject_polish():
     """``objective='auto'`` asks for the per-window ``polish='l2'`` on mild fields; that
-    is a 2D-measured recipe the 3D engine refuses, so the injection is dim-gated."""
+    is a 2D-measured recipe the 3D engine refuses, so the resolver gates it on ``dim``."""
     from dvfopt import correct_dvf
+    from dvfopt.solver import resolve_auto_objective
+
+    # the single source of truth: same objective either way, the polish only in 2D
+    assert resolve_auto_objective(10, -1.0, dim=3)[1] is False
+    assert resolve_auto_objective(10, -1.0) == ("none", True)  # 2D counterpart, unchanged
 
     phi = _planted_3d((8, 14, 14), amp=0.5)
     res = correct_dvf(phi, constraint="simplex_3d", strategy="isqp_windowed", objective="auto")

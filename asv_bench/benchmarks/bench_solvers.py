@@ -119,8 +119,9 @@ class WindowedEngine:
 
 
 class WindowedEngine3D:
-    """Phase 1 of the 3D windowed port (SimplexConstraint3D, 'tr' step rule, 3D edge
-    rows) on a planted 3D fold blob: wall, SQP iterations, L2 move and folds left."""
+    """The 3D windowed port (phases 1-2: SimplexConstraint3D, 'tr' step rule, 3D edge
+    rows, n-D stages) on a planted 3D fold blob: wall, SQP iterations, L2 move and
+    folds left."""
 
     timeout = 600
 
