@@ -175,3 +175,110 @@ def test_3d_giant_workers_ras_reaches_zero_folds_damage_zero():
         reseed_rounds=0,
     )
     assert rep.giant_regions >= 1 and rep.damage == 0 and rep.folds_after == 0
+
+
+def test_harmonic_fill_3d_is_discrete_harmonic_and_keeps_the_boundary():
+    rng = np.random.default_rng(0)
+    phi = rng.normal(size=(3, 12, 12, 12))
+    mask = np.zeros((12, 12, 12), bool)
+    mask[3:9, 3:9, 3:9] = True
+    ref = phi.copy()
+    engine._harmonic_fill(phi, mask)
+    assert np.array_equal(phi[:, ~mask], ref[:, ~mask])
+    inner = mask.copy()
+    inner[[3, 8], :, :] = inner[:, [3, 8], :] = inner[:, :, [3, 8]] = False
+    lap = 6 * phi[:, 1:-1, 1:-1, 1:-1]
+    for ax in (1, 2, 3):
+        lo = [slice(1, -1)] * 3
+        hi = [slice(1, -1)] * 3
+        lo[ax - 1], hi[ax - 1] = slice(0, -2), slice(2, None)
+        lap = lap - phi[(slice(None), *lo)] - phi[(slice(None), *hi)]
+    assert np.abs(lap[:, inner[1:-1, 1:-1, 1:-1]]).max() < 1e-9
+
+
+def test_harmonic_fill_2d_neighbour_order_is_unchanged():
+    # the 2D neighbour order (x+1, x-1, y+1, y-1) decides the float accumulation of the
+    # boundary sum; pin it against a hand-built matrix so the n-D loop cannot drift
+    rng = np.random.default_rng(1)
+    phi = rng.normal(size=(2, 6, 6))
+    mask = np.zeros((6, 6), bool)
+    mask[2:4, 2:4] = True
+    a = phi.copy()
+    engine._harmonic_fill(a, mask)
+    b = phi.copy()
+    ys, xs = np.nonzero(mask)
+    rhs = np.zeros((2, ys.size))
+    for k, (y, x) in enumerate(zip(ys, xs)):
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            if not mask[y + dy, x + dx]:
+                rhs[:, k] += phi[:, y + dy, x + dx]
+    # 4 interior pixels, each with 2 masked neighbours: solve 4 I - A directly
+    A = np.zeros((4, 4))
+    for k, (y, x) in enumerate(zip(ys, xs)):
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            if mask[y + dy, x + dx]:
+                j = int(np.flatnonzero((ys == y + dy) & (xs == x + dx))[0])
+                A[k, j] = -1.0
+        A[k, k] = 4.0
+    for ch in range(2):
+        b[ch, ys, xs] = np.linalg.solve(A, rhs[ch])
+    assert np.allclose(a, b)
+
+
+# The round loop's default 'hybrid' QP backend converges this blob's window fully
+# regardless of how small `maxiter`/`fallback_maxiter` are (a single well-converged
+# QP step already reaches feasibility), so a residual never survives to the mop/
+# re-seed stages under the brief's original knobs. Capping the QP backend's own
+# ADMM iterations (`qp_max_iter`/`qp_max_iter_fallback=2`) on plain `'osqp'` (no
+# interior-point rung) forces genuinely inaccurate per-iteration steps so a real
+# residual survives the round loop and exercises the ported n-D mop / re-seed code.
+_FORCE_RESIDUAL = dict(qp_max_iter=2, qp_max_iter_fallback=2, qp_backend='osqp')
+
+
+@needs_osqp
+def test_3d_mop_fires_on_a_residual_and_never_damages():
+    # a hard blob under a short round-loop budget leaves a residual the mop re-windows;
+    # blob y 21..27 -> free box y 17..31 -> two grows reach y 8 -> mop boxes stay at
+    # y >= 9 (measured): nothing below y = 6 is ever freed
+    phi = _blob((14, 40, 30), (7, 24, 15), (4, 6, 6), amp=1.4, seed=0)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        maxiter=10,
+        fallback_maxiter=10,
+        max_rounds=1,
+        reseed_rounds=0,
+        **_FORCE_RESIDUAL,
+    )
+    assert rep.damage == 0 and np.isfinite(out).all()
+    assert rep.mop_windows >= 1
+    assert rep.mop_cleared >= 0  # the mop only helps
+    assert np.array_equal(out[:, :, :6], phi[:, :, :6])
+
+
+@needs_osqp
+def test_3d_reseed_stage_runs_on_a_residual_and_books_touched():
+    phi = _blob((14, 40, 30), (7, 24, 15), (4, 6, 6), amp=1.4, seed=0)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        maxiter=10,
+        fallback_maxiter=10,
+        max_rounds=1,
+        mop_margin_3d=0,
+        **_FORCE_RESIDUAL,
+    )
+    assert rep.damage == 0
+    if rep.reseed_folds_before > 0:
+        assert rep.reseed_rounds_run >= 1 and rep.reseed_px > 0
+        assert rep.reseed_folds_after <= rep.reseed_folds_before

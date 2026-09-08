@@ -1227,8 +1227,8 @@ def _mop_pass(
     clears folds a small window can't. Solved WHOLE (tiling would just re-introduce
     the frozen boundaries) up to a generous cap; the rare over-cap cluster falls back
     to Schwarz. Big windows may overlap — harmless, each enforces its own footprint.
-    Sweeps until no further progress, i.e. the genuine local floor."""
-    H, W = phi.shape[1:]
+    Sweeps until no further progress, i.e. the genuine local floor. Any rank."""
+    shape = phi.shape[1:]
     whole_cap = 4 * max_window_area  # the mop is allowed much larger single QPs
     for _sweep in range(max_sweeps):
         mask = pixel_fold_mask(constraint, phi, threshold)
@@ -1236,13 +1236,15 @@ def _mop_pass(
         if n == 0:
             break
         lbl, _ = ndimage.label(mask)  # raw residual clusters (per connected component)
-        for sy, sx in ndimage.find_objects(lbl):
-            fy0, fy1 = max(0, sy.start - mop_margin), min(H, sy.stop + mop_margin)
-            fx0, fx1 = max(0, sx.start - mop_margin), min(W, sx.stop + mop_margin)
-            box = (fy0, fy1, fx0, fx1)
-            touched[max(0, fy0 - ring) : fy1 + ring, max(0, fx0 - ring) : fx1 + ring] = True
+        for sl in ndimage.find_objects(lbl):
+            box = tuple(
+                v
+                for s, n_ax in zip(sl, shape)
+                for v in (max(0, s.start - mop_margin), min(n_ax, s.stop + mop_margin))
+            )
+            touched[_box_slices(_pad_box(box, shape, ring))] = True
             rep.mop_windows += 1
-            if (fy1 - fy0) * (fx1 - fx0) > whole_cap:
+            if _box_size(box) > whole_cap:
                 _solve_giant_schwarz(
                     phi,
                     constraint,
@@ -1264,7 +1266,7 @@ def _mop_pass(
                 # rotated-branch residual for 12 367 of 15 657 s (79%), and the re-seed
                 # stage then cleared it in 7 s. Small mop windows keep the full ladder
                 # (the sliver-type residual needs it and is cheap).
-                big = (fy1 - fy0) * (fx1 - fx0) > max_window_area
+                big = _box_size(box) > max_window_area
                 _solve_window(
                     phi,
                     constraint,
@@ -1401,37 +1403,45 @@ def _engine_kwargs(opts):
 
 
 def _harmonic_fill(phi, mask):
-    """Replace ``phi[:, mask]`` by the discrete-harmonic (4-neighbour Laplacian)
-    interpolation of ``phi`` on the mask's boundary, in place. One sparse solve per
-    channel over the masked pixels (a few hundred on real residuals)."""
-    H, W = mask.shape
-    ys, xs = np.nonzero(mask)
-    n = len(ys)
+    """Replace ``phi[:, mask]`` by the discrete-harmonic (2·ndim-neighbour Laplacian)
+    interpolation of ``phi`` on the mask's boundary, in place — any rank. One sparse
+    solve per channel over the masked grid points (a few hundred on real residuals).
+    The neighbour order (last axis first, ``+1`` before ``-1``) is the 2D engine's
+    ``(0, 1), (0, -1), (1, 0), (-1, 0)`` and fixes the boundary sum's float order."""
+    shape = mask.shape
+    ndim = len(shape)
+    pts = np.nonzero(mask)
+    n = len(pts[0])
     if n == 0:
         return
-    idx = np.full((H, W), -1, dtype=np.int64)
-    idx[ys, xs] = np.arange(n)
+    idx = np.full(shape, -1, dtype=np.int64)
+    idx[pts] = np.arange(n)
+    offsets = [
+        tuple((d if a == ax else 0) for a in range(ndim))
+        for ax in reversed(range(ndim))
+        for d in (1, -1)
+    ]
     rows, cols, vals = [], [], []
     rhs = np.zeros((phi.shape[0], n))
-    for k, (y, x) in enumerate(zip(ys, xs)):
+    for k, p in enumerate(zip(*pts)):
         deg = 0
-        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-            y2, x2 = y + dy, x + dx
-            if not (0 <= y2 < H and 0 <= x2 < W):
+        for off in offsets:
+            q = tuple(int(pi) + oi for pi, oi in zip(p, off))
+            if not all(0 <= qi < ni for qi, ni in zip(q, shape)):
                 continue
             deg += 1
-            if mask[y2, x2]:
+            if mask[q]:
                 rows.append(k)
-                cols.append(idx[y2, x2])
+                cols.append(int(idx[q]))
                 vals.append(-1.0)
             else:
-                rhs[:, k] += phi[:, y2, x2]
+                rhs[:, k] += phi[(slice(None), *q)]
         rows.append(k)
         cols.append(k)
         vals.append(float(deg))
     lap = sparse.csc_matrix((vals, (rows, cols)), shape=(n, n))
     for ch in range(phi.shape[0]):
-        phi[ch, ys, xs] = spsolve(lap, rhs[ch])
+        phi[(ch, *pts)] = spsolve(lap, rhs[ch])
 
 
 def _reseed_stage(
@@ -1451,13 +1461,14 @@ def _reseed_stage(
 ):
     """Harmonic re-seed of every residual fold cluster, then a recursive polish; in place.
 
-    A residual cell's corner pixels (the cell and its +1 row/column) dilated by
-    ``radius`` form the re-seed mask; its interior is replaced by the harmonic
-    interpolation of the ring, which puts the cluster back on the ring's orientation
-    branch. The polish is :func:`windowed_correct` on the re-seeded field with this
-    stage off (never recursive) and the coarse warm start off; its windows' patch
-    boxes join ``touched`` so the outer damage accounting stays exact. Stops when
-    the field is fold-free, the deadline passes, or a round makes no progress.
+    A residual cell's corner pixels (the cell and its +1 shift along every axis)
+    dilated by ``radius`` form the re-seed mask; its interior is replaced by the
+    harmonic interpolation of the ring, which puts the cluster back on the ring's
+    orientation branch. The polish is :func:`windowed_correct` on the re-seeded
+    field with this stage off (never recursive) and the coarse warm start off; its
+    windows' patch boxes join ``touched`` so the outer damage accounting stays
+    exact. Stops when the field is fold-free, the deadline passes, or a round makes
+    no progress. Any rank.
     """
     fold0 = pixel_fold_mask(constraint, phi, threshold)
     if not fold0.any():
@@ -1470,10 +1481,14 @@ def _reseed_stage(
         if nf == 0 or expired():
             break
         rep.reseed_rounds_run += 1
-        corners = fold.copy()
-        corners[1:, :] |= fold[:-1, :]
-        corners[:, 1:] |= fold[:, :-1]
-        corners[1:, 1:] |= fold[:-1, :-1]
+        corners = fold.copy()  # a cell's 2**ndim corner grid points: OR the +1 shift per axis
+        for ax in range(fold.ndim):
+            shifted = np.zeros_like(corners)
+            dst = [slice(None)] * fold.ndim
+            src = [slice(None)] * fold.ndim
+            dst[ax], src[ax] = slice(1, None), slice(None, -1)
+            shifted[tuple(dst)] = corners[tuple(src)]
+            corners |= shifted
         mask = ndimage.binary_dilation(corners, iterations=radius)
         _harmonic_fill(phi, mask)
         rep.reseed_px += int(mask.sum())
@@ -1491,9 +1506,8 @@ def _reseed_stage(
             **{k: v for k, v in sub_kw.items() if k != "ladder"},
         )
         phi[...] = out
-        for w in rep_in.windows:  # the polish's enforced footprints
-            py0, px0 = max(0, w.fy0 - ring), max(0, w.fx0 - ring)
-            touched[py0 : py0 + w.ph, px0 : px0 + w.pw] = True
+        for w in rep_in.windows:  # the polish's enforced footprints (= the padded patches)
+            touched[_box_slices(w.patch_box)] = True
         rep.windows.extend(rep_in.windows)
         rep.backend_fallbacks += rep_in.backend_fallbacks
         rep.patience_fallbacks += rep_in.patience_fallbacks

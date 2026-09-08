@@ -240,7 +240,7 @@ def test_3d_planted_folds_no_damage_and_untouched_voxels_bit_identical(objective
     # 3D certificate fields are filled; the 2D ones stay at their defaults
     assert rep.best_diag_floor_after >= 0 and rep.best_diag_floor_after_zero >= 0
     assert rep.folds_after_zero >= 0 and rep.best_diag_floor_after <= rep.folds_after
-    assert rep.coarse_folds_before == -1 and rep.mop_windows == 0 and rep.reseed_rounds_run == 0
+    assert rep.coarse_folds_before == -1  # too small for the coarse stage (min(shape) < 64)
 
 
 @needs_osqp
