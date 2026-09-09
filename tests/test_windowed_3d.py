@@ -379,10 +379,15 @@ def test_defaults_table_resolves_only_knobs_left_at_their_2d_default():
     three = resolve_dim_defaults(3, **two)
     assert three["giant_tile"] == 16 and three["mop_margin"] == 6
     assert three["max_window_area"] == DEFAULTS_BY_DIM["max_window_area"][3]
+    assert three["ip_cold"] is False and three["max_window_area"] == 8000
     # an explicit non-default value is honoured in any dimension; 0 still disables the mop
     assert resolve_dim_defaults(3, **{**two, "giant_tile": 12})["giant_tile"] == 12
     assert resolve_dim_defaults(3, **{**two, "mop_margin": 0})["mop_margin"] == 0
     assert resolve_dim_defaults(2, **{**two, "giant_tile": 12})["giant_tile"] == 12
+    # sharp edge: ip_cold=True IS the 2D default, so on a 3D field it still resolves to
+    # False — there is no way to request the cold IP solve on 3D through this knob.
+    # An explicit non-default int, though, is honoured as-is.
+    assert resolve_dim_defaults(3, **{**two, "qp_max_iter": 1500})["qp_max_iter"] == 1500
 
 
 def test_twin_knobs_are_gone():

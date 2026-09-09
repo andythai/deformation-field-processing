@@ -126,24 +126,39 @@ _REANCHOR_MIN_GAIN = 0.01  # stop sweeping once a sweep buys < 1% of the L2 move
 _REANCHOR_TOL = 1e-9  # accepted rows must clear `threshold` by this much
 _REANCHOR_OVERLAP = 8  # 2D re-anchor tile overlap, in px (48 stepped by 40 in the prototype)
 
-DEFAULTS_BY_DIM: dict[str, dict[int, int]] = {
+DEFAULTS_BY_DIM: dict[str, dict[int, int | bool]] = {
     # knob -> {dim: default}. The 2D column IS the engine's signature default (never
     # change it here without changing the signature); the 3D column is the phase-3
     # measured table (CHANGELOG "3D windowed engine, phase 3"). A knob a caller leaves
     # at its 2D default takes the column for the field's dimension; any other explicit
     # value is honoured in every dimension — so `giant_tile=12` works on a 3D field, and
     # `mop_margin=0` still disables the mop. (`giant_tile=64` on a 3D field therefore
-    # reads as "the 3D default"; pass 65 if you really want a 64-voxel tile.)
+    # reads as "the 3D default"; pass 65 if you really want a 64-voxel tile.) The one
+    # exception is `ip_cold`, where `True` IS the 2D default: a 3D caller cannot ask for
+    # the cold IP solve through `ip_cold=True` — that request reads as "leave it at the
+    # 2D default" and resolves to the 3D column (False). The engine-level knob that
+    # forces an IP solve is `qp_backend='hybrid'` + `ip_after_admm_iters=0` (IP after
+    # every ADMM run), which is a different thing (IP after warm-started ADMM, not cold),
+    # not a substitute escape hatch.
     'giant_tile': {2: 64, 3: 16},  # 16^3 voxels ~= the 2D 64^2 tile by count
     'mop_margin': {2: 25, 3: 6},  # residual + 6/side -> a 13-17^3 mop window
-    'max_window_area': {2: 3000, 3: 5000},  # phase-3 Task 2 ruling
+    # sub20 whole 19 it / L2 19.1 vs tiled 437 it / 23.3; 14000 is 3x the wall (QP-bound)
+    'max_window_area': {2: 3000, 3: 8000},
     'reanchor_tile': {2: 48, 3: 16},
     # module-internal, not a kwarg: the 2D column is a LITERAL 8 so that patching
     # `_REANCHOR_OVERLAP` (benchmarks/windowed_3d_sweep.py) reads as "not at the 2D
-    # default" and is honoured on 3D. The entry block passes the constant in.
-    'reanchor_overlap': {2: 8, 3: 8},  # phase-3 Task 3 ruling
-    'qp_max_iter': {2: 1000, 3: 1000},  # phase-3 Task 3 ruling
-    'ip_after_admm_iters': {2: 800, 3: 800},  # phase-3 Task 3 ruling
+    # default" and is honoured on 3D. ov4: -20.5% L2 at half the wall vs ov8 -24%;
+    # outside the 2% rule, so 8 stands. The entry block passes the constant in.
+    'reanchor_overlap': {2: 8, 3: 8},
+    # NEW ROW: the cold Clarabel solve steers the 17^3 window into a 107-iteration
+    # basin; an ADMM-only start reaches the same L2 in 26 iterations.
+    'ip_cold': {2: True, 3: False},
+    # 17^3 window 107 -> 23 it with ip_cold False (cap 1000 alone: 26 it at
+    # admm_at_cap 0.71; cap 2000 alone: 22 it but 2x the QP time); twist crop neutral
+    # (468 -> 479 it), where ip_cold False alone is already +20%.
+    'qp_max_iter': {2: 1000, 3: 2000},
+    'qp_max_iter_fallback': {2: 500, 3: 1000},  # NEW ROW: tracks qp_max_iter (half)
+    'ip_after_admm_iters': {2: 800, 3: 800},  # ip400 / ip200: no gain on either case
 }
 
 
@@ -672,12 +687,22 @@ def windowed_correct(
     the family ring (the frozen inset band must stay fold-free).
 
     **Per-dimension defaults.** A knob listed in :data:`DEFAULTS_BY_DIM`
-    (``giant_tile``, ``mop_margin``, ``max_window_area``, ``reanchor_tile``, the QP
-    caps) that the caller LEAVES at its 2D default is replaced at entry by that
+    (``giant_tile``, ``mop_margin``, ``max_window_area``, ``reanchor_tile``, ``ip_cold``,
+    the QP caps) that the caller LEAVES at its 2D default is replaced at entry by that
     knob's column for the field's dimension — so a 3D solve gets the phase-3
     measured 3D table without a second set of ``*_3d`` parameters. Any other
     explicit value is honoured in every dimension (``giant_tile=12`` on a 3D field
-    is 12; ``mop_margin=0`` still disables the mop).
+    is 12; ``mop_margin=0`` still disables the mop). Phase-3 ruled the 3D column at
+    ``max_window_area=8000`` (an 8000-voxel 20^3 region solves whole in 19 iterations vs 437
+    tiled), ``ip_cold=False`` and ``qp_max_iter=2000``/``qp_max_iter_fallback=1000``
+    (a cold Clarabel start traps the same window in a 107-iteration basin; an
+    ADMM-only start with the raised caps clears it in 23). The ``ip_cold`` column is
+    the one sharp edge: ``True`` IS the 2D default, so a 3D caller cannot request the
+    cold IP solve by passing ``ip_cold=True`` — that reads as "use the 2D default"
+    and still resolves to ``False``. Forcing an IP solve on 3D needs the
+    engine-level ``qp_backend='hybrid'`` + ``ip_after_admm_iters=0`` (IP after every
+    ADMM run) instead, which is IP-after-warm-ADMM, not IP-cold — a different thing,
+    not a substitute.
 
     ``inner`` selects the per-window solver — ``"isqp"`` (default, the tuned
     elastic-QP SQP), ``"slsqp"``, or ``"slsqp+trust-constr"`` (see
@@ -915,11 +940,14 @@ def windowed_correct(
         reanchor_tile=reanchor_tile,
         reanchor_overlap=_REANCHOR_OVERLAP,
         qp_max_iter=qp_max_iter,
+        qp_max_iter_fallback=qp_max_iter_fallback,
+        ip_cold=ip_cold,
         ip_after_admm_iters=ip_after_admm_iters,
     )
     giant_tile, mop_margin, max_window_area = r['giant_tile'], r['mop_margin'], r['max_window_area']
     reanchor_tile, reanchor_overlap = r['reanchor_tile'], r['reanchor_overlap']
     qp_max_iter, ip_after_admm_iters = r['qp_max_iter'], r['ip_after_admm_iters']
+    qp_max_iter_fallback, ip_cold = r['qp_max_iter_fallback'], r['ip_cold']
     if step_rule == 'exact_ls' and is3d:
         # The exact line model needs rows that are BILINEAR in the displacements — true
         # of every 2D family here, false of a 6-tet volume (trilinear, hence cubic along
