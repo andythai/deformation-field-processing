@@ -715,10 +715,12 @@ def windowed_correct(
     the plateau is boundary-stuck folds inside the giants that a small window's
     tight frozen boundary can't clear but a large frozen-exterior window can (the
     analogue of the 2.5D pipeline's ``mop_interior_3d``). ``mop_margin=0``
-    disables. The 3D default is 6 — a residual cluster plus 6 per side is a ~13-17³
-    window (2.2k-4.9k voxels, around ``max_window_area``: the bigger ones are solved
-    as ONE attempt, ``ladder=False``, like a big 2D mop window) and always under the
-    mop's own ``whole_cap`` of 4x that, so it is not tiled.
+    disables. ``mop_margin`` 6 on 3D gives a 13-17^3 mop window (2.2k-4.9k voxels); the
+    mop's one-attempt threshold and its ``whole_cap`` (4x) follow ``max_window_area``,
+    which the phase-3 table sets to 8000 on 3D — so a 3D mop window of that size runs
+    the full ladder and ``whole_cap`` is 32000 voxels (phase 2 measured the mop at the
+    3000 / 12000 thresholds; the cluster crop is the case that fires it — CHANGELOG
+    phase 3).
 
     Four knobs tune the inner solves (all ``isqp``-only, defaults measured on
     the hard B0039 crops):

@@ -12,6 +12,10 @@ engine kwarg). Cases: ``subvol16`` (the phase-1 17^3 B0039 sub-volume), ``sub20`
 cut, 8000 voxels — the artefact between the 17^3 that one window solves and the 24^3 crops
 the tiler must split), and the phase-2 crops ``twist`` / ``cluster`` / ``sliver`` /
 ``moderate``. Run from the repo root.
+
+``resolved`` in the record is the per-dimension resolution of the table knobs
+(``DEFAULTS_BY_DIM``); a ``--set`` at a 2D default value resolves to the 3D column on a
+3D case.
 """
 
 import argparse
@@ -133,12 +137,19 @@ def run(case, cfg, tag, settings):
     move = out - phi
     admm = [(w, i) for w, i, s in QP_LOG if not s.startswith("clarabel")]
     qp_w = np.array([w for w, _i, _s in QP_LOG]) if QP_LOG else np.zeros(1)
-    cap = settings.get("qp_max_iter", 1000)
+    dim = phi.ndim - 1
+    base = {
+        k: col[2] for k, col in _cm.DEFAULTS_BY_DIM.items()
+    }  # the 2D defaults = the engine signature defaults
+    base.update({k: v for k, v in kw.items() if k in _cm.DEFAULTS_BY_DIM})
+    resolved = _cm.resolve_dim_defaults(dim, **base)
+    cap = resolved["qp_max_iter"]
     rec = dict(
         case=case,
         cfg=cfg,
         tag=tag,
         settings=settings,
+        resolved=resolved,
         shape=list(map(int, phi.shape[1:])),
         folds_in=int((mv0 < THR).sum()),
         floor_in=int(n_neg_best_diagonal(phi, THR)),
