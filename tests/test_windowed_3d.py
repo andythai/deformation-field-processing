@@ -380,8 +380,9 @@ def test_defaults_table_resolves_only_knobs_left_at_their_2d_default():
     assert three["giant_tile"] == 16 and three["mop_margin"] == 6
     assert three["max_window_area"] == DEFAULTS_BY_DIM["max_window_area"][3]
     # ip_cold stays True in both columns (False was measured and REJECTED: it wins the
-    # 17^3 whole window but breaks the tiled crops); the QP cap takes the 3D column.
-    assert three["ip_cold"] is True and three["qp_max_iter"] == 2000
+    # 17^3 whole window but breaks the tiled crops); the QP cap also stays at its 2D
+    # value on 3D (2000/1000 was measured and REJECTED — see DEFAULTS_BY_DIM).
+    assert three["ip_cold"] is True and three["qp_max_iter"] == 1000
     assert three["max_window_area"] == 8000
     assert (
         resolve_dim_defaults(3, **three) == three
@@ -432,7 +433,9 @@ def test_dim_defaults_false_takes_every_knob_literally(monkeypatch):
     engine.windowed_correct(
         phi, "isqp", constraint=c, objective=NoneObjective(), threshold=THR, verbose=0
     )
-    assert seen["giant_tile"] == 16 and seen["qp_max_iter"] == 2000  # the table
+    # qp_max_iter now stays at the 2D value (1000) on the table path too, so it can't
+    # distinguish "resolved" from "literal" here; giant_tile still can.
+    assert seen["giant_tile"] == 16  # the table
     # the flag must ride into both recursive solves (coarse warm start, re-seed polish),
     # or a literal run's 2D-default knobs are re-resolved there. Both stages need a large
     # folded field to fire, so this is a source check rather than a run.

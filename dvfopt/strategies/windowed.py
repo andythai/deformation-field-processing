@@ -98,11 +98,13 @@ class WindowedWrapperStrategy(Strategy):
         SQP iteration budget for that fallback retry (the line search
         otherwise runs far past convergence).
     qp_max_iter, qp_max_iter_fallback : int
-        OSQP ADMM iteration cap per subproblem, normal / fallback solves
-        (3D: the per-dimension default 2000 / 1000 — see
-        ``DEFAULTS_BY_DIM``: the cap alone takes a 17^3 window to 22
-        iterations, and on the sliver crop keeps the phase-2 shape at
-        +22% iterations and 955 s vs 1199 s for the base).
+        OSQP ADMM iteration cap per subproblem, normal / fallback solves.
+        On 3D these keep their 2D values (1000 / 500): 2000 / 1000 was
+        measured and REJECTED — it wins the 17^3 whole window
+        (107 -> 22 iterations) but breaks the moderate crop
+        (672 -> 1592 iterations, 2 rounds, mop + re-seed) and taxes
+        twist / sliver (+5 / +22% iterations, +36 / +18% wall); pass
+        ``qp_max_iter=2000`` explicitly for whole-window sizes.
     qp_backend : str
         QP solver behind each subproblem: ``'hybrid'`` (default —
         interior-point Clarabel on a window's cold first solve and after

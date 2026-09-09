@@ -150,11 +150,12 @@ DEFAULTS_BY_DIM: dict[str, dict[int, int | bool]] = {
     # (107 -> 26 it) but breaks the tiled crops (sliver 699 -> 1154 it, 2 rounds, mop +
     # re-seed; moderate 672 -> 1449) — phase 3
     'ip_cold': {2: True, 3: True},
-    # the cap alone (17^3: 22 it; twist 492 vs 468; sliver: 1 round / 27 windows /
-    # 855 iterations (+22 %) / L2 23.4 / 955 s vs 1199 s for the base under the same
-    # load — the phase-2 shape kept).
-    'qp_max_iter': {2: 1000, 3: 2000},
-    'qp_max_iter_fallback': {2: 500, 3: 1000},  # NEW ROW: tracks qp_max_iter (half)
+    # measured and REJECTED at 2000 / 1000: wins the 17^3 whole window (107 -> 22 it)
+    # but breaks the moderate crop (672 -> 1592 it, 2 rounds, mop + re-seed) and taxes
+    # twist / sliver (+5 / +22 % it, +36 / +18 % wall); pass qp_max_iter=2000 explicitly
+    # for whole-window sizes — phase 3
+    'qp_max_iter': {2: 1000, 3: 1000},
+    'qp_max_iter_fallback': {2: 500, 3: 500},  # tracks qp_max_iter (half)
     'ip_after_admm_iters': {2: 800, 3: 800},  # ip400 / ip200: no gain on either case
 }
 
@@ -692,7 +693,12 @@ def windowed_correct(
     explicit value is honoured in every dimension (``giant_tile=12`` on a 3D field
     is 12; ``mop_margin=0`` still disables the mop). Phase-3 ruled the 3D column at
     ``max_window_area=8000`` (an 8000-voxel 20^3 region solves whole in 19 iterations vs 437
-    tiled) and ``qp_max_iter=2000``/``qp_max_iter_fallback=1000``; ``ip_cold=False``
+    tiled); ``qp_max_iter=2000``/``qp_max_iter_fallback=1000`` was measured and
+    REJECTED — it wins the 17^3 whole window (107 -> 22 iterations) but breaks the
+    moderate crop (672 -> 1592 iterations, 2 rounds, mop + re-seed) and taxes
+    twist / sliver (+5 / +22% iterations, +36 / +18% wall), so the QP caps keep
+    their 2D values on 3D and ``qp_max_iter=2000`` is the explicit opt-in for
+    whole-window sizes; ``ip_cold=False``
     was measured and rejected (it wins the 17^3 whole window, 107 -> 26 iterations,
     but breaks the tiled crops — sliver 699 -> 1154 iterations, 2 rounds, mop +
     re-seed; moderate 672 -> 1449). The rule has a sharp edge: a value that IS the 2D
