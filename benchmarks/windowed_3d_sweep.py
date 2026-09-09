@@ -15,7 +15,8 @@ the tiler must split), and the phase-2 crops ``twist`` / ``cluster`` / ``sliver`
 
 ``resolved`` in the record is the per-dimension resolution of the table knobs
 (``DEFAULTS_BY_DIM``); a ``--set`` at a 2D default value resolves to the 3D column on a
-3D case.
+3D case. To sweep a 2D-default value on a 3D case, add ``--set dim_defaults=False``,
+which makes ``windowed_correct`` take every knob literally.
 """
 
 import argparse
@@ -142,7 +143,8 @@ def run(case, cfg, tag, settings):
         k: col[2] for k, col in _cm.DEFAULTS_BY_DIM.items()
     }  # the 2D defaults = the engine signature defaults
     base.update({k: v for k, v in kw.items() if k in _cm.DEFAULTS_BY_DIM})
-    resolved = _cm.resolve_dim_defaults(dim, **base)
+    # `--set dim_defaults=False` makes the engine take the knobs literally, so does this
+    resolved = _cm.resolve_dim_defaults(dim, **base) if kw.get("dim_defaults", True) else base
     cap = resolved["qp_max_iter"]
     rec = dict(
         case=case,

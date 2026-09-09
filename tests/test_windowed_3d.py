@@ -379,10 +379,10 @@ def test_defaults_table_resolves_only_knobs_left_at_their_2d_default():
     three = resolve_dim_defaults(3, **two)
     assert three["giant_tile"] == 16 and three["mop_margin"] == 6
     assert three["max_window_area"] == DEFAULTS_BY_DIM["max_window_area"][3]
-    # sharp edge: ip_cold=True IS the 2D default, so on a 3D field it still resolves to
-    # False — there is no way to request the cold IP solve on 3D through this knob.
-    # An explicit non-default int, though, is honoured as-is.
-    assert three["ip_cold"] is False and three["max_window_area"] == 8000
+    # ip_cold stays True in both columns (False was measured and REJECTED: it wins the
+    # 17^3 whole window but breaks the tiled crops); the QP cap takes the 3D column.
+    assert three["ip_cold"] is True and three["qp_max_iter"] == 2000
+    assert three["max_window_area"] == 8000
     assert (
         resolve_dim_defaults(3, **three) == three
     )  # the recursive solves re-resolve the resolved values
@@ -402,3 +402,34 @@ def test_twin_knobs_are_gone():
     params = inspect.signature(wc).parameters
     assert "giant_tile_3d" not in params and "mop_margin_3d" not in params
     assert not hasattr(ISQPWindowedStrategy(), "giant_tile_3d")
+
+
+def test_dim_defaults_false_takes_every_knob_literally(monkeypatch):
+    from dvfopt.core.windowed import _common as engine
+
+    seen = {}
+    real = engine._InnerOpts
+
+    def spy(*a, **k):
+        o = real(*a, **k)
+        seen["giant_tile"] = o.giant_tile
+        seen["qp_max_iter"] = o.qp_max_iter
+        return o
+
+    monkeypatch.setattr(engine, "_InnerOpts", spy)
+    phi = np.zeros((3, 6, 8, 8))
+    c = SimplexConstraint3D(shape=(6, 8, 8))
+    engine.windowed_correct(
+        phi,
+        "isqp",
+        constraint=c,
+        objective=NoneObjective(),
+        threshold=THR,
+        verbose=0,
+        dim_defaults=False,
+    )
+    assert seen["giant_tile"] == 64 and seen["qp_max_iter"] == 1000  # the 2D defaults
+    engine.windowed_correct(
+        phi, "isqp", constraint=c, objective=NoneObjective(), threshold=THR, verbose=0
+    )
+    assert seen["giant_tile"] == 16 and seen["qp_max_iter"] == 2000  # the table

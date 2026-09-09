@@ -133,13 +133,9 @@ DEFAULTS_BY_DIM: dict[str, dict[int, int | bool]] = {
     # at its 2D default takes the column for the field's dimension; any other explicit
     # value is honoured in every dimension — so `giant_tile=12` works on a 3D field, and
     # `mop_margin=0` still disables the mop. (`giant_tile=64` on a 3D field therefore
-    # reads as "the 3D default"; pass 65 if you really want a 64-voxel tile.) The one
-    # exception is `ip_cold`, where `True` IS the 2D default: a 3D caller cannot ask for
-    # the cold IP solve through `ip_cold=True` — that request reads as "leave it at the
-    # 2D default" and resolves to the 3D column (False). The engine-level knob that
-    # forces an IP solve is `qp_backend='hybrid'` + `ip_after_admm_iters=0` (IP after
-    # every ADMM run), which is a different thing (IP after warm-started ADMM, not cold),
-    # not a substitute escape hatch.
+    # reads as "the 3D default"; pass 65 if you really want a 64-voxel tile, or
+    # `dim_defaults=False` to take every knob literally — the escape for a 3D run that
+    # must use a 2D-default value.)
     'giant_tile': {2: 64, 3: 16},  # 16^3 voxels ~= the 2D 64^2 tile by count
     'mop_margin': {2: 25, 3: 6},  # residual + 6/side -> a 13-17^3 mop window
     # sub20 whole 19 it / L2 19.1 vs tiled 437 it / 23.3; 14000 is 3x the wall (QP-bound)
@@ -150,12 +146,13 @@ DEFAULTS_BY_DIM: dict[str, dict[int, int | bool]] = {
     # default" and is honoured on 3D. ov4: -20.5% L2 at half the wall vs ov8 -24%;
     # outside the 2% rule, so 8 stands. The entry block passes the constant in.
     'reanchor_overlap': {2: 8, 3: 8},
-    # NEW ROW: the cold Clarabel solve steers the 17^3 window into a 107-iteration
-    # basin; an ADMM-only start reaches the same L2 in 26 iterations.
-    'ip_cold': {2: True, 3: False},
-    # 17^3 window 107 -> 23 it with ip_cold False (cap 1000 alone: 26 it at
-    # admm_at_cap 0.71; cap 2000 alone: 22 it but 2x the QP time); twist crop neutral
-    # (468 -> 479 it), where ip_cold False alone is already +20%.
+    # measured and REJECTED as False: the ADMM-only start wins the 17^3 whole window
+    # (107 -> 26 it) but breaks the tiled crops (sliver 699 -> 1154 it, 2 rounds, mop +
+    # re-seed; moderate 672 -> 1449) — phase 3
+    'ip_cold': {2: True, 3: True},
+    # the cap alone (17^3: 22 it; twist 492 vs 468; sliver: 1 round / 27 windows /
+    # 855 iterations (+22 %) / L2 23.4 / 955 s vs 1199 s for the base under the same
+    # load — the phase-2 shape kept).
     'qp_max_iter': {2: 1000, 3: 2000},
     'qp_max_iter_fallback': {2: 500, 3: 1000},  # NEW ROW: tracks qp_max_iter (half)
     'ip_after_admm_iters': {2: 800, 3: 800},  # ip400 / ip200: no gain on either case
@@ -662,6 +659,7 @@ def windowed_correct(
     reseed_rounds=3,
     reseed_radius=2,
     time_budget_s=None,
+    dim_defaults=True,
     verbose=1,
     record_history=False,
     step_callback=None,
@@ -687,22 +685,20 @@ def windowed_correct(
     the family ring (the frozen inset band must stay fold-free).
 
     **Per-dimension defaults.** A knob listed in :data:`DEFAULTS_BY_DIM`
-    (``giant_tile``, ``mop_margin``, ``max_window_area``, ``reanchor_tile``, ``ip_cold``,
+    (``giant_tile``, ``mop_margin``, ``max_window_area``, ``reanchor_tile``,
     the QP caps) that the caller LEAVES at its 2D default is replaced at entry by that
     knob's column for the field's dimension — so a 3D solve gets the phase-3
     measured 3D table without a second set of ``*_3d`` parameters. Any other
     explicit value is honoured in every dimension (``giant_tile=12`` on a 3D field
     is 12; ``mop_margin=0`` still disables the mop). Phase-3 ruled the 3D column at
     ``max_window_area=8000`` (an 8000-voxel 20^3 region solves whole in 19 iterations vs 437
-    tiled), ``ip_cold=False`` and ``qp_max_iter=2000``/``qp_max_iter_fallback=1000``
-    (a cold Clarabel start traps the same window in a 107-iteration basin; an
-    ADMM-only start with the raised caps clears it in 23). The ``ip_cold`` column is
-    the one sharp edge: ``True`` IS the 2D default, so a 3D caller cannot request the
-    cold IP solve by passing ``ip_cold=True`` — that reads as "use the 2D default"
-    and still resolves to ``False``. Forcing an IP solve on 3D needs the
-    engine-level ``qp_backend='hybrid'`` + ``ip_after_admm_iters=0`` (IP after every
-    ADMM run) instead, which is IP-after-warm-ADMM, not IP-cold — a different thing,
-    not a substitute.
+    tiled) and ``qp_max_iter=2000``/``qp_max_iter_fallback=1000``; ``ip_cold=False``
+    was measured and rejected (it wins the 17^3 whole window, 107 -> 26 iterations,
+    but breaks the tiled crops — sliver 699 -> 1154 iterations, 2 rounds, mop +
+    re-seed; moderate 672 -> 1449). The rule has a sharp edge: a value that IS the 2D
+    default reads as "leave it at the 2D default" and still resolves to the 3D
+    column, so ``dim_defaults=False`` is the escape — it takes every knob literally,
+    with no per-dimension resolution.
 
     ``inner`` selects the per-window solver — ``"isqp"`` (default, the tuned
     elastic-QP SQP), ``"slsqp"``, or ``"slsqp+trust-constr"`` (see
@@ -911,6 +907,10 @@ def windowed_correct(
     ``report.reseed_rounds_run`` / ``reseed_px`` / ``reseed_folds_before`` /
     ``reseed_folds_after`` record it.
 
+    ``dim_defaults=False`` takes every knob literally — no per-dimension resolution;
+    the measurement escape for a 3D run that must use a 2D-default value, e.g.
+    ``giant_tile=64``.
+
     ``time_budget_s`` (``None`` = unlimited) is checked at round boundaries and
     before each window solve; on expiry the engine stops, logs a warning, and
     finishes accounting on the best-so-far field. ``record_history=True`` fills
@@ -934,8 +934,7 @@ def windowed_correct(
             f"got rank {np.asarray(phi_in).ndim}"
         )
     is3d = dim == 3
-    r = resolve_dim_defaults(
-        dim,
+    knobs = dict(
         giant_tile=giant_tile,
         mop_margin=mop_margin,
         max_window_area=max_window_area,
@@ -946,6 +945,7 @@ def windowed_correct(
         ip_cold=ip_cold,
         ip_after_admm_iters=ip_after_admm_iters,
     )
+    r = resolve_dim_defaults(dim, **knobs) if dim_defaults else knobs
     giant_tile, mop_margin, max_window_area = r['giant_tile'], r['mop_margin'], r['max_window_area']
     reanchor_tile, reanchor_overlap = r['reanchor_tile'], r['reanchor_overlap']
     qp_max_iter, ip_after_admm_iters = r['qp_max_iter'], r['ip_after_admm_iters']
@@ -1476,7 +1476,10 @@ def _reanchor_pass(
 def _engine_kwargs(opts):
     """``_InnerOpts`` as ``windowed_correct`` kwargs for a recursive solve (the coarse
     warm start, the re-seed polish): every knob except ``ladder``, which is per-window
-    (the mop's big windows) and not a ``windowed_correct`` parameter."""
+    (the mop's big windows) and not a ``windowed_correct`` parameter. ``dim_defaults``
+    is not carried either: these values are already resolved, so re-resolving them is
+    the identity (idempotent), and a ``dim_defaults=False`` run's values are non-default
+    anyway."""
     return {k: v for k, v in asdict(opts).items() if k != "ladder"}
 
 

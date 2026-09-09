@@ -100,9 +100,9 @@ class WindowedWrapperStrategy(Strategy):
     qp_max_iter, qp_max_iter_fallback : int
         OSQP ADMM iteration cap per subproblem, normal / fallback solves
         (3D: the per-dimension default 2000 / 1000 — see
-        ``DEFAULTS_BY_DIM``: with ``ip_cold=False`` a 17^3 window drops
-        from 107 to 23 iterations — 1000 alone plateaus at 26 iterations,
-        2000 alone reaches 22 but at 2x the QP time per iteration).
+        ``DEFAULTS_BY_DIM``: the cap alone takes a 17^3 window to 22
+        iterations, and on the sliver crop keeps the phase-2 shape at
+        +22% iterations and 955 s vs 1199 s for the base).
     qp_backend : str
         QP solver behind each subproblem: ``'hybrid'`` (default —
         interior-point Clarabel on a window's cold first solve and after
@@ -113,15 +113,10 @@ class WindowedWrapperStrategy(Strategy):
     ip_cold : bool
         Use interior point for a window's cold first solve (where the
         ADMM warm start is worth nothing). ``qp_backend='hybrid'`` only.
-        3D: the per-dimension default is ``False`` — the cold Clarabel
-        solve steers a 17^3 window into a 107-iteration basin, where an
-        ADMM-only start reaches the same L2 in 26. ``True`` IS the 2D
-        default, so passing ``ip_cold=True`` on a 3D field reads as
-        "leave it at the 2D default" and still resolves to ``False`` —
-        forcing the cold IP solve there needs the engine-level
-        ``qp_backend='hybrid'`` + ``ip_after_admm_iters=0`` (IP after
-        every ADMM run) instead, which is a different thing, not a
-        substitute escape hatch.
+        On in every dimension: ``False`` was measured on 3D and rejected
+        — the ADMM-only start wins the 17^3 whole window (107 -> 26
+        iterations) but breaks the tiled crops (sliver 699 -> 1154
+        iterations, 2 rounds, mop + re-seed; moderate 672 -> 1449).
     ip_after_admm_iters : int
         Use interior point for the solve after any ADMM solve that ran
         at least this many iterations — the tail signal that the warm
@@ -203,6 +198,10 @@ class WindowedWrapperStrategy(Strategy):
     reanchor_tile : int
         Re-anchor tile size in px (tiles overlap by 8; 3D: the
         per-dimension default — see ``DEFAULTS_BY_DIM``).
+    dim_defaults : bool
+        ``False`` takes every knob literally — no per-dimension
+        resolution; the measurement escape for a 3D run that must use a
+        2D-default value, e.g. ``giant_tile=64``.
     """
 
     inner: Optional[str] = None
@@ -242,6 +241,7 @@ class WindowedWrapperStrategy(Strategy):
     reanchor_tile: int = 48
     reseed_rounds: int = 3
     reseed_radius: int = 2
+    dim_defaults: bool = True
 
     accepts_constraints = tuple(LOCALITY)
     accepts_objectives = (L1Objective, L2Objective, NoneObjective)
@@ -313,6 +313,7 @@ class WindowedWrapperStrategy(Strategy):
             reseed_rounds=self.reseed_rounds,
             reseed_radius=self.reseed_radius,
             time_budget_s=self.time_budget_s,
+            dim_defaults=self.dim_defaults,
             verbose=verbose,
             record_history=record_history,
             step_callback=step_callback,
