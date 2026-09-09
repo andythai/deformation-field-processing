@@ -63,18 +63,15 @@ def test_restrict_prolongate_round_trip_3d_is_identity_on_a_constant_field():
     assert np.allclose(engine._prolongate(engine._restrict(phi, 2), (8, 8, 8), 2), phi)
 
 
-def test_inner_opts_resolve_the_3d_tile():
+def test_inner_opts_have_no_3d_twin():
     from dvfopt.core.windowed._common import _InnerOpts
 
-    o = _InnerOpts()
-    assert (
-        o.giant_tile == 64 and o.giant_tile_3d == 16
-    )  # 2D default untouched; 16^3 ~= 64^2 by count
+    assert _InnerOpts().giant_tile == 64 and not hasattr(_InnerOpts(), "giant_tile_3d")
 
 
 @needs_osqp
 def test_coarse_warm_start_runs_on_3d_and_keeps_healthy_area_byte_identical():
-    # min(shape) >= 4 * giant_tile_3d (= 64) -> the stage fires; coarse_factor 4 -> a 16^3 coarse
+    # min(shape) >= 4 * giant_tile (= 64) -> the stage fires; coarse_factor 4 -> a 16^3 coarse
     # problem. A smooth x-compression steeper than 1 (dx = -1.3 * (x - 32) on a block) inverts the
     # map at EVERY scale, so the coarse field folds too and the prolongated delta / `allow` mask are
     # really exercised — a random blob averages away at factor 4 (coarse fold-free -> zero delta).
@@ -108,15 +105,14 @@ def test_strategy_forwards_the_3d_knobs(monkeypatch):
         return np.asarray(phi, float), engine.SliceReport()
 
     monkeypatch.setattr(strat, "windowed_correct", fake)
-    s = ISQPWindowedStrategy(giant_tile_3d=12, mop_margin_3d=4)
+    s = ISQPWindowedStrategy(giant_tile=12, mop_margin=4)
     s.solve(
         np.zeros((3, 6, 8, 8)),
         constraint=SimplexConstraint3D(shape=(6, 8, 8)),
         objective=NoneObjective(),
         threshold=THR,
     )
-    assert seen["giant_tile_3d"] == 12 and seen["mop_margin_3d"] == 4
-    assert seen["giant_tile"] == 64 and seen["mop_margin"] == 25  # the 2D knobs are not repurposed
+    assert seen["giant_tile"] == 12 and seen["mop_margin"] == 4
 
 
 def test_fit_tile_nd_matches_the_2d_fit_and_clamps():
@@ -148,7 +144,7 @@ def test_3d_giant_region_is_tiled_and_cleared():
     # _fit_tile_nd((16, 16, 16), 10) == 8, step 4 -> 4 tiles per axis of <= 8^3 voxels each.
     # (step = max(tile - overlap, tile // 2, 1) = max(8 - 4, 4, 1) = 4: the tile // 2 floor
     # ties here and only binds for tiles nearer the overlap, see the step-floor test below.)
-    # NOTE: the smaller shared fixture (16^3 field, max_window_area=200, giant_tile_3d=6)
+    # NOTE: the smaller shared fixture (16^3 field, max_window_area=200, giant_tile=6)
     # was tried here first per the fix-wave's conditional — it clears (giant_regions >= 1,
     # folds_after == 0, damage == 0) but in 188.67s (not "well under 60s") and its far
     # planes are no longer untouched (the blob is too close to the field boundary at that
@@ -166,8 +162,8 @@ def test_3d_giant_region_is_tiled_and_cleared():
         threshold=THR,
         verbose=0,
         max_window_area=800,
-        giant_tile_3d=10,
-        mop_margin_3d=0,
+        giant_tile=10,
+        mop_margin=0,
         reseed_rounds=0,
     )
     assert rep.giant_regions >= 1 and len(rep.giant_boxes[0]) == 6
@@ -181,7 +177,7 @@ def test_3d_giant_region_is_tiled_and_cleared():
 
 @needs_osqp
 def test_3d_giant_workers_ras_reaches_zero_folds_damage_zero():
-    # NOTE: the smaller shared fixture (16^3, max_window_area=200, giant_tile_3d=6) tried
+    # NOTE: the smaller shared fixture (16^3, max_window_area=200, giant_tile=6) tried
     # here per the fix-wave's conditional does not fit the way the brief assumed: fitted
     # tile is 5 (not 6), step 1 (not 2), so `giant_tile_fit` produces 2744 near-duplicate
     # overlapping tiles per sweep (vs 64 below) -- a combinatorial blow-up that made this
@@ -196,9 +192,9 @@ def test_3d_giant_workers_ras_reaches_zero_folds_damage_zero():
         threshold=THR,
         verbose=0,
         max_window_area=800,
-        giant_tile_3d=10,
+        giant_tile=10,
         giant_workers=2,
-        mop_margin_3d=0,
+        mop_margin=0,
         reseed_rounds=0,
     )
     assert rep.giant_regions >= 1 and rep.damage == 0 and rep.folds_after == 0
@@ -302,7 +298,7 @@ def test_3d_reseed_stage_runs_on_a_residual_and_books_touched():
         maxiter=10,
         fallback_maxiter=10,
         max_rounds=1,
-        mop_margin_3d=0,
+        mop_margin=0,
         **_FORCE_RESIDUAL,
     )
     assert rep.damage == 0
@@ -330,7 +326,7 @@ def test_3d_reanchor_reduces_the_move_and_keeps_zero_folds(kind):
         threshold=THR,
         verbose=0,
         reanchor=kind,
-        giant_tile_3d=16,
+        giant_tile=16,
         reanchor_maxiter=8,  # unit-test budget; tile 16 steps by 8 (the overlap is 8), so the moved region is ~8 tiles
         reanchor_sweeps=1,
     )

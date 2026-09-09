@@ -152,7 +152,10 @@ Imports flow one way. Breaking these is what re-tangles the package.
   Stopping is the mechanism: handing the remaining iterations to the `'tr'`
   ACCEPTANCE instead was measured worse (2350), because mid-run the ratio test
   accepts tiny steps rather than rejecting them. 2D only (a 6-tet row is cubic
-  along a line), degraded to `'tr'` at `windowed_correct`'s entry on 3D. The maximal fold-free step
+  along a line), degraded to `'tr'` at `windowed_correct`'s entry on 3D, so the
+  patience rung (`step_rule == 'exact_ls'`-gated) stays off in 3D. The cubic
+  line model that would make it exact in 3D was built and REFUTED in phase 3 (wins
+  the sparse crops, loses the dense ones and the 17^3 whole window; CHANGELOG). The maximal fold-free step
   cap tried alongside it is REFUTED — it strangles the elastic mechanism; do not
   add one, and do not scope `exact_ls` out of the no-TR rung (re-measured on the
   shipped implementation: 1918 vs 1684 on `z0_sliver`).
