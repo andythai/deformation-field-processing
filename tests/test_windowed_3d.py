@@ -433,3 +433,9 @@ def test_dim_defaults_false_takes_every_knob_literally(monkeypatch):
         phi, "isqp", constraint=c, objective=NoneObjective(), threshold=THR, verbose=0
     )
     assert seen["giant_tile"] == 16 and seen["qp_max_iter"] == 2000  # the table
+    # the flag must ride into both recursive solves (coarse warm start, re-seed polish),
+    # or a literal run's 2D-default knobs are re-resolved there. Both stages need a large
+    # folded field to fire, so this is a source check rather than a run.
+    import inspect
+
+    assert inspect.getsource(engine.windowed_correct).count("dim_defaults=dim_defaults") == 2

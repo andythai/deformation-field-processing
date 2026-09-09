@@ -1061,6 +1061,7 @@ def windowed_correct(
                 # so `resolve_dim_defaults` passes them through unchanged
                 mop_margin=mop_margin,
                 time_budget_s=time_budget_s,
+                dim_defaults=dim_defaults,
                 verbose=verbose,
                 **_engine_kwargs(opts),
             ),
@@ -1170,6 +1171,7 @@ def windowed_correct(
                 margin_delta=margin_delta,
                 max_window_area=max_window_area,
                 mop_margin=mop_margin,
+                dim_defaults=dim_defaults,
                 verbose=verbose,
                 **_engine_kwargs(opts),
             ),
@@ -1477,9 +1479,10 @@ def _engine_kwargs(opts):
     """``_InnerOpts`` as ``windowed_correct`` kwargs for a recursive solve (the coarse
     warm start, the re-seed polish): every knob except ``ladder``, which is per-window
     (the mop's big windows) and not a ``windowed_correct`` parameter. ``dim_defaults``
-    is not carried either: these values are already resolved, so re-resolving them is
-    the identity (idempotent), and a ``dim_defaults=False`` run's values are non-default
-    anyway."""
+    is not here either — it is not an ``_InnerOpts`` field — but the two recursive call
+    sites pass it explicitly alongside these: under ``False`` the knobs ARE the 2D
+    defaults the flag exists to keep, so a recursive solve without it would resolve them
+    to the 3D column."""
     return {k: v for k, v in asdict(opts).items() if k != "ladder"}
 
 
