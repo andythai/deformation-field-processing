@@ -95,7 +95,15 @@ follows [Semantic Versioning](https://semver.org/).
 
 - **The final gate**, the crop pack and the 16³ sub-volume under the phase-3 table, against the phase-2 rows (twist 468 iterations / 576 s / L2 27.0; sliver 699 / 633 / 23.3; moderate 672 / 878 / 58.7; cluster 2818 / 8250 / 90.4; 16³ tiled 299 / 267 / 96.9 vs whole 107 / 638 / 55.8):
 
-  __FINAL_GATE_TABLE__
+    | case | folds in → out | floor out | damage | rounds | windows | mop | re-seed | SQP iters | L2 move | phase 2 (iters / L2) |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | twist | 403 → 0 | 0 | 0 | 1 | 29 | 0 | 0 | 468 | 27.0 | 468 / 27.0 |
+  | sliver | 1094 → 0 | 0 | 0 | 1 | 27 | 0 | 0 | 699 | 23.3 | 699 / 23.3 |
+  | moderate | 1217 → 0 | 0 | 0 | 1 | 27 | 0 | 0 | 672 | 58.7 | 672 / 58.7 |
+  | cluster | 3038 → 0 | 0 | 0 | 2 | 94 | 2 | 1 | 2818 | 90.4 | 2818 / 90.4 |
+  | subvol16 (17³) | 721 → 0 | 0 | 0 | 1 | 1 | 0 | 0 | 107 | 55.8 | tiled 299 / 96.9 |
+
+  Every case reaches 0 fixed-6-tet folds at threshold AND at 0, 0 best-diagonal floor, damage 0. The four crops reproduce the phase-2 result to the SQP iteration and the move (the defaults table changes no crop behaviour, and the deterministic engine repeats every count); the one phase-3 gain is the 17³ B0039 sub-volume, which the raised `max_window_area` (8000) now solves as ONE window in 107 SQP iterations at L2 move 55.8, against phase 2's tiled 299 iterations / L2 96.9 — 64 % fewer iterations, 43 % smaller move. Walls are load-contended (the QP tables above carry the idle baselines); SQP iterations and L2 move are the deterministic columns.
 
 - **The gate's second verdict: `qp_max_iter` reverts to 1000 / 500.** The sliver isolation above cleared `ip_cold`, but under `qp_max_iter=2000` / fallback 1000 (cap 8000, `ip_cold=True`, `'tr'`) the full crop pack still regresses: twist 492 SQP iterations / 784 s / L2 26.6 (phase 2: 468 / 576 / 27.0); sliver 855 / 748 / 23.4 (699 / 633 / 23.3); moderate 2 rounds / 61 windows / a mop window / a re-seed round / 1592 iterations / 2724 s / L2 61.4 (phase 2: 1 round / 27 / 672 / 878 / 58.7). The `ls_tr` row on moderate — cap 8000 with the phase-2 QP settings — is 672 / 896 / 58.7, reproducing phase 2 exactly, so the cap-8000/mop coupling is not the cause; the ADMM cap is. `qp_max_iter` / `qp_max_iter_fallback` revert to their 2D values (1000 / 500) in `DEFAULTS_BY_DIM`; cap 2000 wins only the 17³ whole window (107 → 22 iterations, 738 s contended) and is now the explicit opt-in for whole-window sizes (`qp_max_iter=2000` on a 3D field is honoured — 2000 is not the 2D default).
 
