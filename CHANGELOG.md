@@ -59,9 +59,16 @@ follows [Semantic Versioning](https://semver.org/).
   | twist | qp_cap500 | 458 | 458 | 275 | 0.38 | 39 | 342 | 26.5 |
   | twist | qp_osqp | 603 | 603 | 300 | 0.14 | 0 | 401 | 26.3 |
 
-  `qp_n` equals `sqp_iters` on every row (one QP per SQP iteration). Idle re-runs of the two baselines and the finalist:
+  `qp_n` equals `sqp_iters` on every row (one QP per SQP iteration). Idle re-runs of the two baselines and the finalist (load ~20 %, 22:22-22:55; the subvol16 finalist row is its 22:07 run, near-idle at 336 s):
 
-  __QP_IDLE_ROWS__
+  | case | tag | sqp_iters | qp_n | admm_med | admm_at_cap | ip_solves | wall s (idle) | L2 |
+  |---|---|---|---|---|---|---|---|---|
+  | subvol16 | qp_base_idle | 107 | 107 | 250 | 0.14 | 16 | 660 | 55.8 |
+  | twist | qp_base_idle | 468 | 468 | 212 | 0.14 | 100 | 658 | 27.0 |
+  | twist | qp_nocold_cap2000_idle | 479 | 479 | 150 | 0.03 | 76 | 592 | 26.6 |
+  | subvol16 | qp_nocold_cap2000 | 23 | 23 | 1350 | 0.33 | 11 | 336 | 55.7 |
+
+  Idle, the 17^3 baseline is 660 s (107 it) against the finalist's 336 s (23 it): -49 % wall at the same L2; on twist the finalist is neutral idle too (658 -> 592 s, 468 -> 479 it).
 
 - **Re-anchor overlap on 3D stays 8.** Twist with `reanchor='l2'`, one sweep: overlap 8 opens 27 tiles (25 accepted) and takes the L2 move 27.03 → 20.57 (-24 %) in 5034 s; overlap 4 opens 8 tiles (8 accepted) → 21.48 (-20.5 %) in 2517 s. 4 lands 4.4 % above 8's result, outside the 2 % rule, so `_REANCHOR_OVERLAP` keeps its 8 in both dimensions and 4 is documented as the half-cost alternative (the stage is opt-in either way).
 
