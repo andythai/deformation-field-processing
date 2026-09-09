@@ -6,6 +6,90 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — 3D windowed engine, phase 3: `DEFAULTS_BY_DIM` (the per-dimension defaults table), the 3D cap, the QP settings; the cubic line model measured and refuted
+
+- The defaults table. `DEFAULTS_BY_DIM` (`dvfopt/core/windowed/_common.py`) maps knob → {dim: default} and is resolved once at the engine entry by `resolve_dim_defaults(dim, **knobs)`: a knob a caller leaves at its 2D default takes the column for the field's dimension, any other explicit value is honoured in every dimension (`giant_tile=12` works on a 3D field; `mop_margin=0` still disables the mop). The sharp edge is that the rule is value equality, so a value that IS the 2D default cannot be requested on 3D — `giant_tile=64` on a 3D field reads as "the 3D default" (pass 65 for a 64-voxel tile), and `ip_cold=True` likewise resolves to the 3D column `False` (the engine-level way to force an IP solve is `qp_backend='hybrid'` + `ip_after_admm_iters=0`, i.e. IP after warm-started ADMM, which is a different thing from a cold IP solve). The phase-2 twin knobs `giant_tile_3d` / `mop_margin_3d` are **gone** (unreleased, no alias): pass `giant_tile=` / `mop_margin=`, which now mean what they say on a 3D field.
+
+  | knob | 2D | 3D | why |
+  |---|---|---|---|
+  | `giant_tile` | 64 | 16 | 16³ voxels ≈ the 2D 64² tile by count (phase 2) |
+  | `mop_margin` | 25 | 6 | residual + 6/side → a 13-17³ mop window (phase 2) |
+  | `max_window_area` | 3000 | 8000 | sub20 whole 19 iterations / L2 19.1 vs tiled 437 / 23.3 |
+  | `reanchor_tile` | 48 | 16 | the giant tile, as in 2D |
+  | `reanchor_overlap` | 8 | 8 | module constant `_REANCHOR_OVERLAP`, not a kwarg; ov4 buys -20.5 % L2 at half the wall vs ov8's -24 % — outside the 2 % rule |
+  | `ip_cold` | True | False | the cold Clarabel solve steers the 17³ window into a 107-iteration basin; the ADMM-only start reaches the same L2 in 26 |
+  | `qp_max_iter` | 1000 | 2000 | with `ip_cold=False`: 17³ window 107 → 23 iterations at the same move |
+  | `qp_max_iter_fallback` | 500 | 1000 | tracks `qp_max_iter` (half) |
+  | `ip_after_admm_iters` | 800 | 800 | 400 / 200 measured, no gain on either case |
+
+- **Wall-time caveat, once, for every number below.** A `degu_atlas.release` job from another project loaded this box to 50-94 % from 13:17 on 2026-09-08, and the same run measured 625 s idle against 1201-1320 s contended. Every wall in the QP table and the line-model gate is therefore contended; SQP-iteration counts and the per-QP ADMM statistics (`admm_med` = median ADMM iterations per QP solve, `admm_at_cap` = fraction of solves hitting the cap, `ip_solves` = Clarabel legs) are the robust columns, and both are carried. Every row in every table below is 0 folds at threshold, 0 folds at 0, 0 best-diagonal floor and damage 0 unless stated.
+
+- **The 3D window cap is 8000 voxels.** The artefact is `sub20` — a 20³ = 8000-voxel cut of the raw B0039 field at offset (132, 132, 180), 10.0 % of its cubes below threshold, 686 folds in / 636 at the floor (`benchmarks/windowed_3d_sweep.py --cut-sub20`) — sized to sit between the 17³ one window solves whole and the 24³ crops the tiler must split. Caps 3000 and 5000 tile it identically (27 tiles, same iterations and same move); cap 8000 solves it whole in 19 iterations, 18 % closer in L2 and 34 % closer in L1, at 1.2-1.5x the wall (inside the 2.5x rule). The same shape holds on the 16³ sub-volume, where phase 2's tiling cost +74 % L2. The cost if the cap is wrong: an 8000-voxel window is ~26 s per SQP iteration (`qp_s_med` below), so a slow-converging region of that size is expensive where tiles would not be.
+
+  | case | tag | n_windows | sqp_iters | qp_s_med | wall_s | L2 | L1 |
+  |---|---|---|---|---|---|---|---|
+  | sub20 (20³, 686 folds) | cap3000 | 27 | 437 | 0.27 | 435 | 23.3 | 635 |
+  | sub20 | cap5000 | 27 | 437 | 0.32 | 544 | 23.3 | 635 |
+  | sub20 | cap8000 (whole) | 1 | 19 | 25.9 | 630 | 19.1 | 417 |
+  | subvol16 (17³, 721 folds) | cap5000 (whole) | 1 | 107 | 3.38 | 625 | 55.8 | 1150 |
+  | subvol16 | phase-2 defaults (tiled) | 8 | 299 | — | 267 | 96.9 | — |
+  | twist (24³, 403 folds) | cap8000 (tiled) | 29 | 468 | 0.49 | 599 | 27.0 | 649 |
+  | twist | cap14000 (whole) | 3 | 38 | 7.00 | 1893 | 21.3 | 424 |
+
+  The `cap14000` extension solves the whole 24³ twist crop as three windows with no tiler: -92 % iterations, -21 % L2 and -35 % L1 against the tiled run, but 3.2x the wall with 75 % of its QP solves at the ADMM cap. It is the **fidelity setting**, not the default (the 2.5x wall rule), and a phase-4 candidate together with the QP backend — at ~14k voxels the run is QP-bound, so a faster QP at that size would make the whole-window solve win outright.
+
+- **The QP settings on 3D: `ip_cold=False` + `qp_max_iter=2000` / `qp_max_iter_fallback=1000`.** On the whole 17³ window the cold Clarabel solve's first step steers the SQP into a 107-iteration basin; an ADMM-only start at a higher accuracy clears it in 23 at the same move (L2 55.7 vs 55.8). On the tiled twist crop — small tiles, where the QP is cheap — the setting is neutral (468 → 479 iterations), and the combination removes the +20 % iteration penalty `ip_cold=False` alone carries there (560). Rejected: `qp_max_iter=500` (on the 17³ the 500-iteration ADMM solves derail the SQP — the window fails, the ladder grows and tiles it into 9 windows, L2 +33 %), plain OSQP with no IP legs at all (12 windows, L2 +42 % — the IP legs are load-bearing in 3D), and `ip_after_admm_iters` 400 / 200 (no gain on either case).
+
+  | case | tag | sqp_iters | qp_n | admm_med | admm_at_cap | ip_solves | wall_s (contended) | L2 |
+  |---|---|---|---|---|---|---|---|---|
+  | subvol16 | qp_base | 107 | 107 | 250 | 0.14 | 16 | 1320 | 55.8 |
+  | subvol16 | qp_cap2000 | 22 | 22 | 1575 | 0.45 | 11 | 738 | 55.9 |
+  | subvol16 | qp_nocold | 26 | 26 | 1000 | 0.71 | 12 | 350 | 55.8 |
+  | subvol16 | **qp_nocold_cap2000** | 23 | 23 | 1350 | 0.33 | 11 | 336 | 55.7 |
+  | subvol16 | qp_ip400 | 96 | 96 | 350 | 0.20 | 32 | 1473 | 55.8 |
+  | subvol16 | qp_ip200 | 104 | 104 | 500 | 0.21 | 48 | 1360 | 55.8 |
+  | subvol16 | qp_cap500 (9 windows) | 660 | 660 | 250 | 0.26 | 17 | 3548 | 74.4 |
+  | subvol16 | qp_osqp (12 windows) | 519 | 519 | 100 | 0.08 | 0 | 1858 | 79.1 |
+  | twist | qp_base | 468 | 468 | 212.5 | 0.14 | 100 | 651 | 27.0 |
+  | twist | qp_cap2000 | 492 | 492 | 150 | 0.05 | 107 | 656 | 26.6 |
+  | twist | qp_nocold | 560 | 560 | 125 | 0.11 | 73 | 522 | 27.0 |
+  | twist | **qp_nocold_cap2000** | 479 | 479 | 150 | 0.03 | 76 | 572 | 26.6 |
+  | twist | qp_ip400 | 435 | 435 | 200 | 0.12 | 137 | 678 | 26.6 |
+  | twist | qp_ip200 | 487 | 487 | 75 | 0.11 | 162 | 761 | 27.0 |
+  | twist | qp_cap500 | 458 | 458 | 275 | 0.38 | 39 | 342 | 26.5 |
+  | twist | qp_osqp | 603 | 603 | 300 | 0.14 | 0 | 401 | 26.3 |
+
+  `qp_n` equals `sqp_iters` on every row (one QP per SQP iteration). Idle re-runs of the two baselines and the finalist:
+
+  __QP_IDLE_ROWS__
+
+- **Re-anchor overlap on 3D stays 8.** Twist with `reanchor='l2'`, one sweep: overlap 8 opens 27 tiles (25 accepted) and takes the L2 move 27.03 → 20.57 (-24 %) in 5034 s; overlap 4 opens 8 tiles (8 accepted) → 21.48 (-20.5 %) in 2517 s. 4 lands 4.4 % above 8's result, outside the 2 % rule, so `_REANCHOR_OVERLAP` keeps its 8 in both dimensions and 4 is documented as the half-cost alternative (the stage is opt-in either way).
+
+- **The cubic exact line search: built, measured, REFUTED** (commit 9c85b00, reverted by 36db826; `'exact_ls'` keeps degrading to `'tr'` on 3D). `'exact_ls'` is exact in 2D because every row family there is bilinear in the displacements, hence quadratic along a step; a 6-tet volume row is trilinear, hence **cubic** along a step. The model pinned that cubic from what the ratio test already evaluates: `c0` and `J d` are exact, and two constraint samples — at the half step and the full step — give the remaining coefficients in closed form (`q2 = 8 r_h - r_1`, `q3 = 2 r_1 - 8 r_h`, with `r_h` / `r_1` the linear model's residuals at those two points). The merit along the step is then piecewise cubic, minimised on `[0, 1]` by a 64-point grid plus golden-section refinement, with the TRUE merit checked before stepping (so a window can never regress). It wins the sparse crops and loses the dense ones, at every setting of the a*-collapse bail:
+
+  | case | tag | rounds | n_windows | mop | reseed | sqp_iters | rejected | wall_s | L2 |
+  |---|---|---|---|---|---|---|---|---|---|
+  | twist | ls_tr | 1 | 29 | 0 | 0 | 468 | 131 | 599 | 27.0 |
+  | twist | ls_cubic | 1 | 29 | 0 | 0 | 246 | 27 | 469 | 26.4 |
+  | sliver | ls_tr | 1 | 27 | 0 | 0 | 699 | 189 | 623 | 23.3 |
+  | sliver | ls_cubic | 1 | 27 | 0 | 0 | 266 | 12 | 444 | 23.7 |
+  | moderate | ls_tr | 1 | 27 | 0 | 0 | 672 | 150 | 896 | 58.7 |
+  | moderate | ls_cubic | 2 | 61 | 1 | 1 | 612 | 62 | 2272 | 61.3 |
+  | moderate | ls_cubic_fb0 | 2 | 61 | 1 | 1 | 1509 | 123 | 2359 | 61.4 |
+  | moderate | ls_cubic_fb6 | 2 | 61 | 1 | 1 | 755 | 91 | 2004 | 61.4 |
+  | subvol16 | ls_tr | 1 | 1 | 0 | 0 | 107 | 11 | 1201 | 55.8 |
+  | subvol16 | ls_cubic | 2 | 12 | 2 | 1 | 527 | 18 | 4389 | 80.6 |
+  | subvol16 | ls_cubic_fb0 | 2 | 12 | 2 | 1 | 1294 | 50 | 3531 | 80.6 |
+  | subvol16 | ls_cubic_fb6 | 2 | 12 | 2 | 1 | 673 | 33 | 2936 | 80.6 |
+
+  Sparse: twist 468 → 246 iterations at -22 % wall and a smaller move (27.0 → 26.4); sliver 699 → 266 at -29 % wall, move +1.7 % (23.3 → 23.7). Dense: moderate goes from one round / 27 windows to two rounds / 61 windows plus a mop and a re-seed round, 2.2-2.6x the wall at bail 3 / 0 / 6; and the 17³ whole window **fails** under the cubic model at every bail setting, so the ladder tiles it into 12 windows for L2 +44 %. The bail (`exact_ls_fallback_steps`, a 2D-measured setting) is not the cause — with it off the windows still fail (20 no-TR fallbacks on moderate) — the cubic model simply converges worse than the ratio test on a dense fold region. Gate: iterations 3/4, wall 2/4, L2 within +10 % 3/4 → refuted for the 3D default. The code is in git history (9c85b00) if a dense-region fix appears; ~25 % wall is left on the table for sparse 3D regions.
+
+- **The final gate**, the crop pack and the 16³ sub-volume under the phase-3 table, against the phase-2 rows (twist 468 iterations / 576 s / L2 27.0; sliver 699 / 633 / 23.3; moderate 672 / 878 / 58.7; cluster 2818 / 8250 / 90.4; 16³ tiled 299 / 267 / 96.9 vs whole 107 / 638 / 55.8):
+
+  __FINAL_GATE_TABLE__
+
+- Process notes. Every measurement chain runs from a **detached snapshot worktree** at the measured commit, never a live one: the first cap chain failed with a `TypeError` in `_InnerOpts` because it imported a worktree an implementer was editing mid-run. The driver is `benchmarks/windowed_3d_sweep.py` — one `windowed_correct` run per call on a phase-2 artefact under explicit overrides, with the QP / exit spies of `windowed_3d_gate.py`: `--case {subvol16, sub20, twist, cluster, sliver, moderate}`, `--tag`, `--set k=v` (any engine kwarg; `reanchor_overlap=N` patches the module constant), `--cut-sub20`, `--table`.
+
 ### Added — 3D windowed engine, phase 2: every stage runs on 3D fields
 
 - The giant-region Schwarz tiler (serial sweeps and `giant_workers` RAS), the coarse-grid warm start, the terminal mop, the harmonic re-seed, the re-anchor stage and the per-window polish are dimension-agnostic (`itertools.product` over per-axis ranges through the phase-1 box helpers; byte-identical in 2D — `benchmarks/windowed_2d_identity.py`: 21 cases, `IDENTITY PASS`). Two 3D defaults, sized from phase 1's cost curve: `giant_tile_3d=16` per axis (16³ voxels is the 2D 64² tile by count) and `mop_margin_3d=6`; the 3D re-anchor tile is `giant_tile_3d`. The phase-1 gates (advisory cap, skipped stages, refused `reanchor` / `polish`) are gone.
