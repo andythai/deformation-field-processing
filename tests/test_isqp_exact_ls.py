@@ -103,30 +103,23 @@ def test_unknown_step_rule_raises():
         _solve(np.zeros((2, 8, 8)), step_rule="nope")
 
 
-@needs_osqp
-def test_exact_ls_uses_the_cubic_model_on_a_3d_field_and_still_refuses_other_ranks(monkeypatch):
+def test_exact_ls_degrades_to_tr_on_a_3d_field_and_still_refuses_other_ranks():
     """A 6-tet volume row is trilinear, hence CUBIC along a line — the quadratic
-    model does not transfer, so since phase 3 the engine keeps ``'exact_ls'`` on a
-    ``(3, D, H, W)`` field and switches the LINE MODEL to ``'cubic'``; every other
-    rank still raises at entry."""
+    model does not transfer. Since the 3D port (phase 1) the engine degrades to
+    ``'tr'`` on a ``(3, D, H, W)`` field instead of refusing it (the degrade is
+    pinned in ``test_windowed_3d.py``); every other rank still raises at entry."""
     from dvfopt.constraints import SimplexConstraint3D
 
-    seen = []
-    orig = engine.solve_window_inner
-    monkeypatch.setattr(
-        engine,
-        "solve_window_inner",
-        lambda sub, inner, maxiter, **kw: (seen.append(kw), orig(sub, inner, maxiter, **kw))[1],
+    phi = np.zeros((3, 4, 8, 8))
+    phi[2] = 0.1  # fold-free: the entry gate is what is under test, not the solve
+    out, rep = windowed_correct(
+        phi.copy(),
+        "isqp",
+        constraint=SimplexConstraint3D(shape=(4, 8, 8)),
+        objective=NoneObjective(),
+        threshold=THR,
     )
-    phi = np.zeros((3, 6, 10, 10))
-    # a real interior fold blob, so windows actually get solved (constant displacement
-    # is fold-free)
-    phi[:, 2:6, 2:8, 2:8] = np.random.default_rng(0).normal(0, 0.5, (3, 4, 6, 6))
-    c3 = SimplexConstraint3D(shape=phi.shape[1:])
-    windowed_correct(
-        phi.copy(), "isqp", constraint=c3, objective=NoneObjective(), threshold=THR, maxiter=3
-    )
-    assert seen and all(k["step_rule"] == "exact_ls" and k["line_model"] == "cubic" for k in seen)
+    assert np.array_equal(out, phi) and rep.n_windows == 0
     with pytest.raises(ValueError, match="2D"):
         windowed_correct(
             np.zeros((2, 8)),
@@ -406,92 +399,3 @@ def test_ftol_and_feas_tol_are_forwarded_to_the_inner(monkeypatch):
     )
     assert seen and all(k["ftol"] == 2e-3 for k in seen)
     assert all(k["feas_tol"] == 0.5 * 1e-3 for k in seen)
-
-
-# ---------------------------------------------------------------------------
-# (h) the cubic line model on 3D rows (``line_model='cubic'``)
-# ---------------------------------------------------------------------------
-
-
-def _sub3d(seed=0, n=7, **kw):
-    """A frozen-ring 3D window sub-problem on a folded blob: ``(sub, x0, d)``.
-
-    ``d`` is zero off ``sub.free_idx`` — the inner only ever scatters free-variable
-    steps back into the full vector, so ``cons_jac(x0) @ d`` is then exactly the
-    ``j @ z[:nf]`` it computes.
-    """
-    from dvfopt.constraints import SimplexConstraint3D
-
-    rng = np.random.default_rng(seed)
-    phi = np.zeros((3, n, n, n))
-    phi[:, 2:5, 2:5, 2:5] = rng.normal(0.0, 0.9, (3, 3, 3, 3))
-    c = SimplexConstraint3D(shape=(n, n, n))
-    sub = build_subproblem(c, phi, (1, n - 1, 1, n - 1, 1, n - 1), THR, NoneObjective(), 1e-3, **kw)
-    x0 = np.asarray(sub.flat0, float)
-    d = np.zeros(x0.size)
-    d[sub.free_idx] = rng.normal(0.0, 0.3, sub.free_idx.size)
-    return sub, x0, d
-
-
-def _cubic_coeffs(sub, x0, d):
-    c0 = np.asarray(sub.cons(x0))
-    g = np.asarray(sub.cons_jac(x0) @ d)
-    r_h = np.asarray(sub.cons(x0 + 0.5 * d)) - c0 - 0.5 * g
-    r_1 = np.asarray(sub.cons(x0 + d)) - c0 - g
-    return c0, g, 8.0 * r_h - r_1, 2.0 * r_1 - 8.0 * r_h
-
-
-@pytest.mark.parametrize("kw", [{}, dict(orientation_delta=0.01, orientation_rows="edges")])
-def test_cubic_line_model_matches_cons_exactly(kw):
-    """A 6-tet volume row is trilinear, hence exactly CUBIC along the line; two
-    samples (``a = 1/2`` and ``a = 1``) pin the two remaining coefficients. With
-    the linear edge rows appended those rows come out with ``q2 = q3 = 0``."""
-    sub, x0, d = _sub3d(**kw)
-    c0, g, q2, q3 = _cubic_coeffs(sub, x0, d)
-    for a in (0.13, 0.5, 0.71, 1.0):
-        model = c0 + g * a + q2 * a * a + q3 * a**3
-        assert np.allclose(model, sub.cons(x0 + a * d), atol=1e-9, rtol=0), a
-    if kw:  # the appended edge rows are linear: no curvature at all along the line
-        assert int(((np.abs(q2) < 1e-12) & (np.abs(q3) < 1e-12)).sum()) > 0
-
-
-def test_cubic_minimiser_is_within_a_grid_cell_of_a_dense_scan():
-    sub, x0, d = _sub3d(seed=1)
-    c0, g, q2, q3 = _cubic_coeffs(sub, x0, d)
-    w = np.full(c0.size, 10.0)
-    fco = (0.0, 0.0, 0.0)
-
-    def merit(a):
-        return float(w @ np.maximum(0.0, -np.asarray(sub.cons(x0 + a * d))))
-
-    a_star, m_star, m0 = isqp_mod._cubic_line_min(c0, g, q2, q3, w, fco, 1.0)
-    grid = np.linspace(0.0, 1.0, 4001)
-    dense = np.array([merit(a) for a in grid])
-    assert abs(m0 - merit(0.0)) < 1e-9
-    assert m_star <= dense.min() + 1e-6 * max(1.0, abs(dense.min()))
-    assert abs(merit(a_star) - m_star) < 1e-7 * max(1.0, abs(m_star))
-
-
-@needs_osqp
-def test_line_model_reaches_the_driver_and_defaults_to_quadratic(monkeypatch):
-    import dvfopt.core.windowed._inners as inners
-
-    seen = {}
-    real = inners.isqp_solve
-
-    def spy(*a, **k):
-        seen["line_model"] = k.get("line_model", "MISSING")
-        return real(*a, **k)
-
-    monkeypatch.setattr(inners, "isqp_solve", spy)
-    sub, _x0, _d = _sub3d()
-    inners.solve_window_inner(sub, "isqp", 2, line_model="cubic")
-    assert seen["line_model"] == "cubic"
-    inners.solve_window_inner(sub, "isqp", 2)
-    assert seen["line_model"] == "quadratic"
-
-
-def test_unknown_line_model_raises():
-    pytest.importorskip('osqp')
-    with pytest.raises(ValueError, match="line_model"):
-        isqp_mod.isqp_solve(np.zeros(2), None, None, None, 1, line_model="nope")

@@ -51,7 +51,6 @@ def solve_window_inner(
     tr_max=16.0,
     step_rule="tr",
     exact_ls_fallback_steps=0,
-    line_model="quadratic",
     feas_tol=None,
     ftol=0.0,
 ):
@@ -74,18 +73,16 @@ def solve_window_inner(
 
     ``trust_region`` / ``osqp_max_iter`` / ``qp_backend`` / ``ip_cold`` /
     ``ip_after_admm_iters`` / ``tr_delta`` / ``tr_max`` / ``step_rule`` /
-    ``exact_ls_fallback_steps`` / ``line_model`` are ``isqp``-only knobs
+    ``exact_ls_fallback_steps`` are ``isqp``-only knobs
     (ignored by the SLSQP legs): the engine's per-window fallback re-solves a failed window with
     ``trust_region=False`` (legacy line search), caps the OSQP ADMM iterations
     per subproblem, and ``qp_backend='hybrid'`` routes the cold / long-tail QPs
     to interior-point Clarabel (see
     :class:`dvfopt.core.primitives.isqp._HybridQP`); ``tr_delta`` / ``tr_max``
     size the trust region; ``step_rule='exact_ls'`` swaps the trust-region ratio
-    test for the exact merit line minimiser, with ``line_model`` selecting the
-    polynomial it fits the rows with (``'quadratic'`` for the bilinear 2D rows,
-    ``'cubic'`` for a 6-tet volume row — the engine picks it from the field's
-    dimension), and ``exact_ls_fallback_steps`` stops a window whose ``a*`` has
-    collapsed so the escalation ladder gets it instead.
+    test for the exact merit line minimiser (2D only — the engine guards that),
+    and ``exact_ls_fallback_steps`` stops a window whose ``a*`` has collapsed so
+    the escalation ladder gets it instead.
     Their defaults are :func:`isqp_solve`'s own.
 
     ``trace`` (optional dict) is threaded to the inner solver — ``isqp`` and
@@ -117,7 +114,6 @@ def solve_window_inner(
         tr_max=tr_max,
         step_rule=step_rule,
         exact_ls_fallback_steps=exact_ls_fallback_steps,
-        line_model=line_model,
         feas_tol=feas_tol,
         ftol=ftol,
     )
@@ -140,7 +136,6 @@ def _solve_window_inner(
     tr_max=16.0,
     step_rule="tr",
     exact_ls_fallback_steps=0,
-    line_model="quadratic",
     feas_tol=None,
     ftol=0.0,
 ):
@@ -164,7 +159,6 @@ def _solve_window_inner(
             tr_max=tr_max,
             step_rule=step_rule,
             exact_ls_fallback_steps=exact_ls_fallback_steps,
-            line_model=line_model,
             ftol=ftol,
             **({} if feas_tol is None else {"feas_tol": feas_tol}),
         )

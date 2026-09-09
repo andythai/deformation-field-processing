@@ -143,9 +143,7 @@ class WindowedWrapperStrategy(Strategy):
         z16: 200 s / 563 SQP iterations vs 244 s / 780 (-18% / -28%) at
         0 folds, damage 0 and a smaller move (L2 268 vs 280); 9/9 wall
         and iteration wins over a 9-real-slice sample (-19% / -27%).
-        On a 3D field the rows are cubic along the line (a 6-tet
-        volume is trilinear), so the inner fits the cubic model
-        instead — one extra ``cons`` evaluation pins it exactly.
+        2D only (a 6-tet row is cubic along a line).
     exact_ls_fallback_steps : int
         Consecutive ``'exact_ls'`` steps with ``a* < 0.25`` after which a
         window stops and hands itself to the escalation ladder (0 =

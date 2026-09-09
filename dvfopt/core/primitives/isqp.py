@@ -28,10 +28,9 @@ is the pre-hybrid path, byte for byte.
 Step rule
 ---------
 ``step_rule='exact_ls'`` replaces the trust-region ratio test's accept/reject
-with the EXACT minimiser of the merit function along the QP step
-(:func:`_exact_line_min` on the 2D quadratic model, :func:`_cubic_line_min` under
-``line_model='cubic'`` for 3D rows). ``'tr'`` (this module's default) is the stock
-path, byte for byte.
+with the EXACT minimiser of the merit function along the QP step (2D only —
+:func:`_exact_line_min`). ``'tr'`` (this module's default) is the stock path,
+byte for byte.
 """
 
 from types import SimpleNamespace
@@ -344,48 +343,6 @@ def _exact_line_min(c0, g, q, w, fco, a_hi=1.0):
     return float(aa[b]), float(vv[b]), float(k0[0])
 
 
-def _cubic_line_min(c0, g, q2, q3, w, fco, a_hi=1.0, n_grid=64):
-    """Minimiser on ``[0, a_hi]`` of the model merit ``m(a) = f(a) + sum_i w_i
-    max(0, -c_i(a))`` with CUBIC rows ``c_i(a) = c0 + g a + q2 a**2 + q3 a**3``
-    (a 6-tet volume row is trilinear in the displacements, hence cubic along a
-    line) and the quadratic objective coefficients ``fco = (f0, f1, f2)``.
-
-    Unlike :func:`_exact_line_min` the breakpoints are NOT swept (a cubic's roots
-    have no clean vectorised closed form): ``m`` is evaluated on ``n_grid + 1``
-    equispaced points and the bracketing cell of the best one is refined by
-    golden section. The caller verifies the TRUE merit at ``a*`` before stepping,
-    so an off-by-a-cell minimiser costs a little progress, never correctness.
-    Returns ``(a_star, m_star, m_zero)``.
-    """
-    aa = np.linspace(0.0, a_hi, n_grid + 1)
-
-    def m_of(a):
-        a = np.asarray(a, float)
-        rows = c0[:, None] + g[:, None] * a + q2[:, None] * a * a + q3[:, None] * a**3
-        pen = (w[:, None] * np.maximum(0.0, -rows)).sum(axis=0)
-        return fco[0] + fco[1] * a + fco[2] * a * a + pen
-
-    vals = m_of(aa)
-    b = int(np.argmin(vals))
-    lo, hi = aa[max(b - 1, 0)], aa[min(b + 1, n_grid)]
-    gr = (np.sqrt(5.0) - 1.0) / 2.0
-    x1, x2 = hi - gr * (hi - lo), lo + gr * (hi - lo)
-    f1, f2 = float(m_of([x1])[0]), float(m_of([x2])[0])
-    for _ in range(24):
-        if f1 < f2:
-            hi, x2, f2 = x2, x1, f1
-            x1 = hi - gr * (hi - lo)
-            f1 = float(m_of([x1])[0])
-        else:
-            lo, x1, f1 = x1, x2, f2
-            x2 = lo + gr * (hi - lo)
-            f2 = float(m_of([x2])[0])
-    cands = np.array([aa[b], x1, x2])
-    cv = m_of(cands)
-    k = int(np.argmin(cv))
-    return float(cands[k]), float(cv[k]), float(vals[0])
-
-
 def _ftol_stop(ftol, feas_tol, viol, merit_before, merit_after):
     """The ``ftol`` exit: feasible within ``feas_tol`` and an accepted step that
     moved the merit by no more than ``ftol`` relative (see :func:`isqp_solve`)."""
@@ -421,7 +378,6 @@ def isqp_solve(
     tr_max=16.0,
     step_rule='tr',
     exact_ls_fallback_steps=0,
-    line_model='quadratic',
     ftol=0.0,
     feas_tol=1e-6,
 ):
@@ -541,19 +497,9 @@ def isqp_solve(
     so a default of 3 spares the winner and fires on the pathologies. See
     :func:`dvfopt.core.windowed.windowed_correct` for the engine-level table.
 
-    ``line_model`` picks which polynomial ``'exact_ls'`` fits the rows with.
-    ``'quadratic'`` (default) is the 2D model: every 2D row family here is BILINEAR
-    in ``(dy, dx)``, so a row is exactly quadratic along the line and the model is
-    free (its second coefficient reuses the ``cons(x + d)`` the ratio test already
-    evaluates). ``'cubic'`` is the 3D model: a 6-tet volume row is trilinear, hence
-    cubic along a line, and ONE extra evaluation at ``a = 1/2`` pins its two
-    remaining coefficients exactly (0.0007 s at 17^3 against a 9 s QP). A cubic
-    merit has no clean vectorised breakpoint sweep, so its minimiser is taken on a
-    dense grid refined by golden section (:func:`_cubic_line_min`) rather than in
-    closed form; as in 2D the TRUE merit at ``a*`` is verified before stepping, so
-    the rule can never regress a window either way.
-    :func:`dvfopt.core.windowed.windowed_correct` — the only caller — picks the
-    model from the field's dimension. Measured in 2D on raw B0039 z16: 200 s /
+    ``'exact_ls'`` is **2D only** (a 6-tet volume row is trilinear, hence cubic
+    along a line); :func:`dvfopt.core.windowed.windowed_correct` — the only
+    caller — guards that at its entry. Measured there on raw B0039 z16: 200 s /
     563 SQP iterations vs 244 s / 780 at ``'tr'`` (-18% / -28%), 0 folds, damage
     0 and a SMALLER move (L2 268 vs 280); over a 9-real-slice B0039 sample, 9/9
     wall AND iteration wins, -19% wall / -27% iterations in total, with a smaller
@@ -585,8 +531,6 @@ def isqp_solve(
         )
     if step_rule not in ('tr', 'exact_ls'):
         raise ValueError(f"unknown step_rule {step_rule!r}; valid: 'tr', 'exact_ls'")
-    if line_model not in ('quadratic', 'cubic'):
-        raise ValueError(f"unknown line_model {line_model!r}; valid: 'quadratic', 'cubic'")
     from scipy import sparse
 
     n_small = 0  # consecutive accepted exact steps with a* < the shrink threshold
@@ -724,21 +668,13 @@ def isqp_solve(
             break
         if step_rule == 'exact_ls':
             # Exact merit line minimisation in place of the ratio test's
-            # accept/reject. The rows are exactly polynomial along the line (see the
-            # docstring), and c1 reuses the cons(x + d) the ratio test already makes.
+            # accept/reject. The rows are exactly quadratic along the line (see the
+            # docstring), and q reuses the cons(x + d) the ratio test already makes.
             gl = np.asarray(j @ z[:nf])  # (J d)_i, exact linear term
-            c1 = np.asarray(cons(x + d)) - c - gl  # residual past the linear term at a = 1
+            ql = np.asarray(cons(x + d)) - c - gl  # exact quadratic term, no table
             fh, f1 = float(obj(x + 0.5 * d)), float(obj(x + d))
             fco = (fx, 4.0 * fh - f1 - 3.0 * fx, 2.0 * f1 + 2.0 * fx - 4.0 * fh)
-            if line_model == 'cubic':
-                # 3D: a 6-tet row is trilinear -> cubic along the line; one extra
-                # evaluation at a = 1/2 pins the two remaining coefficients exactly.
-                ch = np.asarray(cons(x + 0.5 * d)) - c - 0.5 * gl
-                q2, q3 = 8.0 * ch - c1, 2.0 * c1 - 8.0 * ch
-                a_star, _m_star, _m0 = _cubic_line_min(c, gl, q2, q3, rho_vec, fco, 1.0)
-            else:
-                # 2D: every row family is bilinear -> exactly quadratic along the line
-                a_star, _m_star, _m0 = _exact_line_min(c, gl, c1, rho_vec, fco, 1.0)
+            a_star, _m_star, _m0 = _exact_line_min(c, gl, ql, rho_vec, fco, 1.0)
             # Guard: only the objective part of the line model is fitted (exact for
             # a quadratic objective, approximate for L1), so verify the TRUE merit
             # before stepping — 'exact_ls' can then never regress a window.
