@@ -52,7 +52,11 @@ def test_composite_certifies_a_planted_fold_and_reports_both_stages():
         next(n for n in names if n.startswith('bulk:'))
     )
     assert info.total_iter == sum(p.n_iter for p in info.phases)
+    # "first feasible", not "last" — a bulk stage that already cleared the field wins.
+    assert info.feasible_after_phase == min(i for i, p in enumerate(info.phases) if p.n_neg == 0)
     assert 'bulk_n_neg_after' in info.extras
+    assert 'bulk_n_below_after' in info.extras
+    assert 'bulk_min_after' in info.extras
     assert 'bulk_wall_s' in info.extras
     assert 'damage' in info.extras
 
@@ -77,6 +81,29 @@ def test_windowed_stage_receives_the_bulk_output(monkeypatch):
     )
     Solver(constraint=c, objective=L2Objective(), strategy=strat, threshold=THR).fit(phi)
     assert np.allclose(seen['phi_in'], bulk_out)  # the windowed stage starts from m10_3d's output
+
+
+@needs_osqp
+def test_time_budget_reaches_the_windowed_stage(monkeypatch):
+    """The GUI toolbar's budget only reaches strategies that expose the field, so the
+    composite has one and forwards it to the stage that can honour it (m10_3d cannot)."""
+    import dvfopt.strategies.composite3d as mod
+    from dvfopt.solver import SolveInfo
+
+    seen = {}
+
+    def spy(self, phi_in, **kw):
+        seen['budget'] = self.time_budget_s
+        return phi_in, SolveInfo(strategy_name='spy')  # short-circuit: the forward is the test
+
+    monkeypatch.setattr(mod.ISQPWindowedStrategy, 'solve', spy)
+    phi = planted_fold_3d(4, 8, 8, depth=1.4)
+    c = SimplexConstraint3D(shape=phi.shape[1:])
+    strat = make_strategy('m10_windowed_3d')
+    strat.time_budget_s = 7.0
+    Solver(constraint=c, objective=L2Objective(), strategy=strat, threshold=THR).fit(phi)
+    assert seen['budget'] == 7.0
+    assert strat.windowed.time_budget_s is None  # the composite's own stage is not mutated
 
 
 def test_solver_rejects_a_2d_constraint():
