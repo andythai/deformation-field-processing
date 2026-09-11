@@ -291,6 +291,7 @@ def _cmd_correct(args) -> int:
                 'constraint': args.constraint,
                 'objective': args.objective,
                 'strategy': args.strategy,
+                'strategy_resolved': res.info.strategy_name,
                 'feasible': res.feasible,
                 'init_n_neg': res.init_n_neg,
                 'init_min_T': res.init_min_T,
@@ -413,9 +414,11 @@ def build_parser() -> argparse.ArgumentParser:
         '--pipeline',
         choices=('solver', 'slices', '25d', '3d'),
         default='solver',
-        help='solver: one Solver run (2D slice, or a 3D constraint on a volume); '
-        'slices: per-slice 2D sweep over a (3,D,H,W) volume; '
-        '25d: marching fold prevention (needs dz==0); 3d: full 3D fold repair',
+        help='solver: one Solver run (2D slice, or a (3,D,H,W) volume with '
+        '--constraint simplex_3d is the whole-volume Solver route, where '
+        "--strategy auto picks the 3D default); slices: per-slice 2D sweep over a "
+        '(3,D,H,W) volume; 25d: marching fold prevention (needs dz==0); '
+        '3d: the packaged correct_dvf_3d full-volume fold-repair pipeline',
     )
     pc.add_argument(
         '--constraint',
