@@ -137,6 +137,7 @@ def strategy_class_for(algo: str):
         # ``_current_params_algo`` always qualifies 3D lookups, so the
         # unqualified key is never consulted in 3D mode.
         'isqp_windowed@tet3d': dvfopt.ISQPWindowedStrategy,
+        'm10_windowed_3d@tet3d': dvfopt.HarmonicALMBarrierWindowed3DStrategy,
         'm14@tet3d': dvfopt.HarmonicALMRefineRepair3DStrategy,
         'm14_schwarz@tet3d': dvfopt.SchwarzHarmonicALMRefineRepair3DStrategy,
         'm10@tet3d': dvfopt.HarmonicALMBarrier3DStrategy,

@@ -254,6 +254,7 @@ _METHOD_SPECS_JDET = [
 ]
 _METHOD_SPECS_TET3D = [
     ('isqp_windowed', 'I-SQP windowed 3D (no-damage cluster windows; needs osqp)'),
+    ('m10_windowed_3d', 'M10Tet → I-SQP windowed repair (fast certificate; needs osqp)'),
     ('slp', 'SLP-3D (cluster trust-region SLP + HiGHS L1; m10 seed)'),
     ('m14', 'M14Tet (harmonic + ALM + L2 refine + repair + polish)'),
     ('m14_schwarz', 'M14-Schwarz3D (cluster decomposition + global polish)'),
@@ -289,6 +290,9 @@ DEFAULT_METHOD_BY_CONSTRAINT = {
 DEFAULT_METHOD_FALLBACK = {
     CONSTRAINT_TET3D: 'm14',
 }
+# Method rows whose strategy needs the optional `osqp` dependency — disabled
+# (but kept visible) by `_repopulate_method_combo` when it isn't installed.
+_OSQP_GATED_ALGOS = ('isqp_windowed', 'm10_windowed_3d')
 
 # Objective families. The L-BFGS-based strategies (Barrier, M10, M14,
 # Schwarz) accept an Objective instance via ``Solver``; SLSQP-windowed
