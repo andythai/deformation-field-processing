@@ -132,6 +132,11 @@ def strategy_class_for(algo: str):
     }
     tet3d = {
         'slp@tet3d': dvfopt.SLPStrategy,
+        # Same class as the unqualified '2tri'/'jdet' key above (it
+        # auto-detects 2D vs 3D) — family-qualified here because
+        # ``_current_params_algo`` always qualifies 3D lookups, so the
+        # unqualified key is never consulted in 3D mode.
+        'isqp_windowed@tet3d': dvfopt.ISQPWindowedStrategy,
         'm14@tet3d': dvfopt.HarmonicALMRefineRepair3DStrategy,
         'm14_schwarz@tet3d': dvfopt.SchwarzHarmonicALMRefineRepair3DStrategy,
         'm10@tet3d': dvfopt.HarmonicALMBarrier3DStrategy,

@@ -587,10 +587,10 @@ def auto_strategy(
     windowed engine (phases 1-3 of the 3D port) is the no-damage, 0-fold
     certificate at every fold tier the crop pack covers, when ``osqp`` is
     importable — its cost is per fold region, not depth. Above that count,
-    extremes (``n_neg > 5000`` or ``init_min < -10``) route to the 3D
-    wallbreakers (``m10_3d`` for L2, ``m14_schwarz_3d`` on volumes >200K
-    voxels, ``m14_3d`` otherwise) — the plain barrier stalls on dense 3D
-    folds. Everything else (mild-to-moderate, without ``osqp``) keeps
+    or without ``osqp``, the pre-rule tiers apply: extremes (``n_neg > 5000``
+    or ``init_min < -10``) route to the 3D wallbreakers (``m10_3d`` for L2,
+    ``m14_schwarz_3d`` on volumes >200K voxels, ``m14_3d`` otherwise) — the
+    plain barrier stalls on dense 3D folds — and everything else keeps
     ``barrier``.
 
     For the Jdet family (no wallbreakers, no SLP): barrier above

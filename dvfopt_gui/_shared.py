@@ -282,6 +282,13 @@ DEFAULT_METHOD_BY_CONSTRAINT = {
     CONSTRAINT_TET3D: 'isqp_windowed',
     CONSTRAINT_JDET3D: 'barrier',
 }
+# Fallback default when a constraint's pinned default row is disabled at
+# runtime (today: 'isqp_windowed' needs osqp) — the constraint's previous
+# pinned default, so `_repopulate_method_combo` doesn't land Run on a dead
+# selection. Only populated for constraints whose default is gated.
+DEFAULT_METHOD_FALLBACK = {
+    CONSTRAINT_TET3D: 'm14',
+}
 
 # Objective families. The L-BFGS-based strategies (Barrier, M10, M14,
 # Schwarz) accept an Objective instance via ``Solver``; SLSQP-windowed
