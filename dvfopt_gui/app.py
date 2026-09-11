@@ -46,6 +46,7 @@ from dvfopt_gui._shared import (  # noqa: F401  (re-exported for back-compat)
     CONSTRAINT_TET3D,
     DEFAULT_CONSTRAINT,
     DEFAULT_METHOD_BY_CONSTRAINT,
+    DEFAULT_METHOD_FALLBACK,
     DEFAULT_OBJECTIVE,
     OBJECTIVE_L1,
     OBJECTIVE_L2,
@@ -982,6 +983,15 @@ class LiveSolverWindow(FileIOMixin, RenderMixin, RunActionsMixin, QtWidgets.QMai
             else DEFAULT_METHOD_BY_CONSTRAINT[constraint]
         )
         idx = self._method_combo.findData(target)
+        if idx >= 0 and not self._method_combo.model().item(idx).isEnabled():
+            # The resolved target's row is disabled (e.g. the pinned
+            # isqp_windowed default without osqp) — fall back to the
+            # constraint's previous default rather than land Run on a dead
+            # selection (ImportError: isqp_solve requires osqp).
+            fallback = DEFAULT_METHOD_FALLBACK.get(constraint)
+            fb_idx = self._method_combo.findData(fallback) if fallback else -1
+            if fb_idx >= 0:
+                idx = fb_idx
         if idx >= 0:
             self._method_combo.setCurrentIndex(idx)
         self._method_combo.blockSignals(False)

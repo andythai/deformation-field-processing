@@ -1377,3 +1377,30 @@ def test_new_random_folded_field_menu_action(qapp, monkeypatch):
     win._on_new_random()
     assert win._volume.shape == (3, 1, 128, 128)
     assert _metric_counts(win._volume[1:, 0], '2tri')[0] > 0
+
+
+def test_tet3d_default_falls_back_to_m14_without_osqp(qapp, monkeypatch):
+    """The simplex-3D menu's pinned default is the windowed engine, whose row is
+    disabled without ``osqp``; ``_repopulate_method_combo`` must then land on the
+    family's previous default (``m14``) instead of the disabled row, or Run would
+    die with ``ImportError: isqp_solve requires osqp``."""
+    import dvfopt_gui.app as app_mod
+    from dvfopt_gui._shared import CONSTRAINT_TET3D
+
+    monkeypatch.setattr(app_mod, '_osqp_available', lambda: False)
+    win = LiveSolverWindow()
+    # a fresh window carries the 2D pick (persisted settings or the 2D default 'slp', also a
+    # valid 3D method), which the combo preserves by design — clear it so the resolution
+    # goes through the pinned default and its disabled-row fallback
+    win._method_combo.clear()
+    win._repopulate_method_combo(CONSTRAINT_TET3D)
+    assert win._method_combo.currentData() == 'm14'
+    assert (
+        not win._method_combo.model().item(win._method_combo.findData('isqp_windowed')).isEnabled()
+    )
+    # with osqp: the pinned default itself (a fresh window — the combo preserves a prior pick)
+    monkeypatch.setattr(app_mod, '_osqp_available', lambda: True)
+    win2 = LiveSolverWindow()
+    win2._method_combo.clear()  # a fresh window carries the 2D pick, which the combo preserves by design
+    win2._repopulate_method_combo(CONSTRAINT_TET3D)
+    assert win2._method_combo.currentData() == 'isqp_windowed'

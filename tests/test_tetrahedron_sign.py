@@ -1027,15 +1027,22 @@ class TestSimplexConstraint3D:
         V = c.values(flat)
         assert np.allclose(V, 1 / 6)
 
-    def test_auto_strategy_tet_tiering(self):
+    def test_auto_strategy_tet_tiering(self, monkeypatch):
         """``auto_strategy`` tiers ``SimplexConstraint3D`` like 2D: mild to
-        moderate folds go barrier; extremes (where the barrier's penalty
-        phase stalls) go to the 3D wallbreakers. Regression: early
-        versions fell through to ``slsqp_windowed`` which doesn't accept
-        tet constraints."""
+        moderate folds go barrier (pinned here without ``osqp`` so the
+        windowed-engine row doesn't shadow it — see
+        ``test_auto_routes_3d_simplex_to_the_windowed_engine_by_fold_count``
+        for the osqp-available windowed-engine routing); extremes (where the
+        barrier's penalty phase stalls) go to the 3D wallbreakers regardless
+        of ``osqp``, since they are above the windowed engine's 5000-fold
+        gate. Regression: early versions fell through to ``slsqp_windowed``
+        which doesn't accept tet constraints."""
+        import importlib.util
+
         from dvfopt import SimplexConstraint3D
         from dvfopt.solver import auto_strategy
 
+        monkeypatch.setattr(importlib.util, 'find_spec', lambda name: None)
         c_small = SimplexConstraint3D(shape=(4, 5, 5))
         # Mild/moderate → barrier.
         for n_neg, init_min in [(1, -0.05), (200, -0.5)]:
@@ -1059,10 +1066,45 @@ class TestSimplexConstraint3D:
             == 'm14_schwarz_3d'
         )
 
+    def test_auto_routes_3d_simplex_to_the_windowed_engine_by_fold_count(self, monkeypatch):
+        """Phase-3 close-out ruling: at <= 5000 folds the windowed engine (no-damage, 0-fold
+        certificate) is the 3D default when osqp is importable; the wallbreaker rows above
+        stay. Depth does not gate it (twist: min -13.4, cleared in 468 iterations)."""
+        import importlib.util
+
+        from dvfopt import SimplexConstraint3D
+        from dvfopt.solver import auto_strategy
+
+        c = SimplexConstraint3D(shape=(6, 8, 8))
+        monkeypatch.setattr(
+            importlib.util, 'find_spec', lambda name: object() if name == 'osqp' else None
+        )
+        for n_neg, mn, obj in [
+            (1, -0.05, 'l2'),
+            (200, -0.5, 'none'),
+            (3038, -3.0, 'l1'),
+            (403, -13.4, 'l2'),
+            (5000, -20.0, 'l2'),
+        ]:
+            assert (
+                auto_strategy(c, init_n_neg=n_neg, init_min=mn, objective_label=obj)
+                == 'isqp_windowed'
+            ), (n_neg, mn, obj)
+        # above the count boundary: the wallbreaker rows, exactly as before
+        assert auto_strategy(c, init_n_neg=5001, init_min=-5.0, objective_label='l2') == 'm10_3d'
+        assert auto_strategy(c, init_n_neg=5001, init_min=-5.0, objective_label='l1') == 'm14_3d'
+        # without osqp: the previous default
+        monkeypatch.setattr(importlib.util, 'find_spec', lambda name: None)
+        assert auto_strategy(c, init_n_neg=200, init_min=-0.5, objective_label='l2') == 'barrier'
+
     def test_auto_dispatch_via_correct_dvf(self):
         """End-to-end: ``correct_dvf(constraint='simplex_3d', strategy='auto')``
-        should reach feasibility, not crash."""
-        from dvfopt import correct_dvf
+        should reach feasibility, not crash. This field's fold count is well
+        under the windowed engine's 5000-fold gate, so with ``osqp``
+        installed 'auto' now picks it (no-damage, 0-fold certificate);
+        without ``osqp`` it falls back to the previous ``barrier`` default."""
+        import dvfopt.solver as solver_mod
+        from dvfopt import SimplexConstraint3D, correct_dvf
 
         rng = np.random.default_rng(0)
         phi = rng.normal(0, 0.05, (3, 4, 5, 5))
@@ -1070,7 +1112,12 @@ class TestSimplexConstraint3D:
         phi[2, 2, 2:4, 2:4] -= 1.0
         result = correct_dvf(phi, constraint='simplex_3d', objective='l2', strategy='auto')
         assert result.feasible
-        assert result.info.strategy_name == 'BarrierStrategy'
+        expected = (
+            'ISQPWindowedStrategy'
+            if solver_mod._isqp_windowed_ok(SimplexConstraint3D(shape=(4, 5, 5)))
+            else 'BarrierStrategy'
+        )
+        assert result.info.strategy_name == expected
 
     def test_end_to_end_barrier_reaches_feasibility(self):
         """A small folded 3D field should be feasibilised by barrier

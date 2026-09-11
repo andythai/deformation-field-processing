@@ -42,8 +42,13 @@ under `objective='none'`. It is never substituted for an L1/L2 request — that 
 a different fidelity ask, so `simplex` + `l1` keeps `'slp'` (and logs a one-line
 hint). Every such route needs `osqp`; without it the case falls through to the
 fold-density tier heuristic. `'simplex'` (full coverage) has no windowed-engine
-locality entry, so only `'simplex_standard'` takes the `none` route. 3D routing
-is unchanged.
+locality entry, so only `'simplex_standard'` takes the `none` route. In 3D,
+`SimplexConstraint3D` with `init_n_neg <= 5000` and `osqp` importable routes
+there too, at any objective the engine accepts; above that count — or without
+`osqp` — the pre-rule tiers apply (the 3D wallbreakers at the extremes,
+`barrier` otherwise). The rule was decided by a twelve-artefact head-to-head:
+the windowed engine certifies 12/12 at damage 0, `barrier` (the previous pick
+on 11 of the 12) 0/12, `m10_3d` 9/12 at 3-11x less wall — see the CHANGELOG.
 
 Across a volume, the DVFopt facade
 parallelises the per-slice loop with `DVFoptConfig(n_workers=N)` (process

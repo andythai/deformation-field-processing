@@ -747,6 +747,18 @@ def test_strategy_params_excludes_supports_3d_and_2d_windowed():
     assert strategy_class_for('barrier@jdet3d') is not None
 
 
+def test_strategy_params_isqp_windowed_tet3d():
+    """``_current_params_algo`` family-qualifies every 3D lookup (see
+    ``LiveSolverWindow._current_params_algo``), so the unqualified
+    'isqp_windowed' key is never consulted in 3D mode — the tet3d family
+    map needs its own entry, same class as 2D (it auto-detects
+    dimensionality)."""
+    from dvfopt import ISQPWindowedStrategy
+    from dvfopt_gui.strategy_params import strategy_class_for
+
+    assert strategy_class_for('isqp_windowed@tet3d') is ISQPWindowedStrategy
+
+
 def test_worker_applies_strategy_overrides():
     from dvfopt import SLPStrategy
 

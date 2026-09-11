@@ -253,6 +253,7 @@ _METHOD_SPECS_JDET = [
     ('auto', 'Auto (pick by fold stats)'),
 ]
 _METHOD_SPECS_TET3D = [
+    ('isqp_windowed', 'I-SQP windowed 3D (no-damage cluster windows; needs osqp)'),
     ('slp', 'SLP-3D (cluster trust-region SLP + HiGHS L1; m10 seed)'),
     ('m14', 'M14Tet (harmonic + ALM + L2 refine + repair + polish)'),
     ('m14_schwarz', 'M14-Schwarz3D (cluster decomposition + global polish)'),
@@ -278,8 +279,15 @@ _METHOD_SPECS_BY_CONSTRAINT = {
 DEFAULT_METHOD_BY_CONSTRAINT = {
     CONSTRAINT_2TRI: 'slp',
     CONSTRAINT_JDET: 'slsqp_windowed',
-    CONSTRAINT_TET3D: 'm14',
+    CONSTRAINT_TET3D: 'isqp_windowed',
     CONSTRAINT_JDET3D: 'barrier',
+}
+# Fallback default when a constraint's pinned default row is disabled at
+# runtime (today: 'isqp_windowed' needs osqp) — the constraint's previous
+# pinned default, so `_repopulate_method_combo` doesn't land Run on a dead
+# selection. Only populated for constraints whose default is gated.
+DEFAULT_METHOD_FALLBACK = {
+    CONSTRAINT_TET3D: 'm14',
 }
 
 # Objective families. The L-BFGS-based strategies (Barrier, M10, M14,

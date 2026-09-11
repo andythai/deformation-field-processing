@@ -508,9 +508,8 @@ def _isqp_windowed_ok(constraint: Constraint) -> bool:
     mirrored by ``ISQPWindowedStrategy.accepts_constraints``) AND ``osqp``
     importable. ``SimplexConstraint2DFullCoverage`` (label ``'simplex'``) has
     no locality entry, so only ``'simplex_standard'`` routes there. The
-    registry now also holds ``SimplexConstraint3D`` (3D port, phase 1); 3D
-    routing is unchanged because :func:`auto_strategy`'s 3D branch never
-    calls this.
+    registry now also holds ``SimplexConstraint3D`` (3D port, phases 1-3);
+    :func:`auto_strategy`'s 3D branch calls this too, at <= 5000 folds.
     """
     import importlib.util
 
@@ -549,6 +548,7 @@ def auto_strategy(
     ``simplex*``          ``l1``      ``slp`` (every fold tier)
     ``simplex*``          ``l2``      density-tiered (see below)
     ``jdet`` / ``finite`` any         ``barrier`` dense, ``isqp_windowed`` mild
+    ``simplex_3d``        any         ``isqp_windowed`` at <= 5000 folds (osqp), else the wallbreakers
     ====================  ==========  ==========================================
 
     ``bilinear`` + ``isqp_windowed`` + ``none`` is the measured robust
@@ -558,7 +558,7 @@ def auto_strategy(
     It is auto-selected for ``bilinear`` at any objective the engine
     accepts, and for ``simplex_standard`` only under ``objective='none'``
     — an L1/L2 anchor is a different fidelity request, never silently
-    swapped out. 3D routing is untouched by these rules.
+    swapped out.
 
     For the 2-triangle constraint:
 
@@ -583,10 +583,14 @@ def auto_strategy(
       * **Mild** — ``slsqp`` (active-set machinery is fine, gives KKT
         certs).
 
-    For the 3D simplex constraint: extremes (``n_neg > 5000`` or
-    ``init_min < -10``) route to the 3D wallbreakers (``m10_3d`` for L2,
-    ``m14_schwarz_3d`` on volumes >200K voxels, ``m14_3d`` otherwise) —
-    the plain barrier stalls on dense 3D folds. Everything else keeps
+    For the 3D simplex constraint: at ``n_neg <= 5000`` (any objective) the
+    windowed engine (phases 1-3 of the 3D port) is the no-damage, 0-fold
+    certificate at every fold tier the crop pack covers, when ``osqp`` is
+    importable — its cost is per fold region, not depth. Above that count,
+    or without ``osqp``, the pre-rule tiers apply: extremes (``n_neg > 5000``
+    or ``init_min < -10``) route to the 3D wallbreakers (``m10_3d`` for L2,
+    ``m14_schwarz_3d`` on volumes >200K voxels, ``m14_3d`` otherwise) — the
+    plain barrier stalls on dense 3D folds — and everything else keeps
     ``barrier``.
 
     For the Jdet family (no wallbreakers, no SLP): barrier above
@@ -626,13 +630,19 @@ def auto_strategy(
         if init_n_neg > 100 or init_min < -0.25:
             return 'barrier'
         return 'slsqp'
-    # 3D simplex: mirror the 2D tiering. Dense 3D folds are exactly where
-    # the plain barrier stalls (its penalty phase can't find a feasible
-    # step when many tets crowd zero simultaneously) — route extremes to
-    # the 3D wallbreakers, whose harmonic seed guarantees a feasible
-    # start. Mild-to-moderate folds keep the barrier (fast, and the
-    # full-grid tet SLSQP does not scale).
+    # 3D simplex: the windowed engine (phases 1-3 of the 3D port) is the
+    # no-damage, 0-fold certificate at every fold tier the crop pack covers;
+    # its cost is per fold region, so the gate is the COUNT, not the depth
+    # the barrier stalls on. Measured head-to-head (CHANGELOG, "3D windowed
+    # engine: auto routing"): twelve 3D artefacts (the B0039 crop pack, the
+    # 17³ sub-volume, one 24³ crop from each of six cohort brains): barrier
+    # — the previous pick — certifies 0/12, m14_3d 0/12, pipeline3d 6/12,
+    # m10_3d 9/12 (fails the two dense regions and one 10 % crop), the
+    # windowed engine 12/12 at damage 0, at 3-5x m10_3d's wall on sparse
+    # regions. Above the count the wallbreakers keep the tier.
     if isinstance(constraint, SimplexConstraint3D):
+        if init_n_neg <= 5000 and _isqp_windowed_ok(constraint):
+            return 'isqp_windowed'
         if init_n_neg > 5000 or init_min < -10.0:
             if objective_label == 'l2':
                 return 'm10_3d'  # ALM phase is L2-optimal
