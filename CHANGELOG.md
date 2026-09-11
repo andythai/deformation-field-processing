@@ -6,6 +6,85 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — 3D windowed engine: auto routes `SimplexConstraint3D` to the windowed engine at ≤ 5000 folds (measured head-to-head); the GUI simplex-3D default
+
+- **The rule.** `auto_strategy` on a `SimplexConstraint3D` with `init_n_neg <= 5000` and `osqp` importable now returns `'isqp_windowed'`, for every objective the engine accepts — so `strategy='auto'` (the `Solver` default path, `correct_dvf`, `dvfopt correct --strategy auto`, the GUI's Auto picker) gets the no-damage certificate instead of a method that leaves folds. Above 5000 folds, **or without `osqp`**, the pre-rule tiers are unchanged: extremes (`n_neg > 5000` or `init_min < -10`) → `m10_3d` for L2, `m14_schwarz_3d` on > 200K-voxel volumes, else `m14_3d`; everything else → `barrier`. The gate is keyed on fold COUNT, not depth — the engine's cost is per fold region, and `twist` (403 folds, minimum −13.4) clears in 468 SQP iterations. **The measurement regime, stated once:** the twelve artefacts top out at 24³ / 3038 folds; 5000 is the ruled extrapolation, and the gate carries no volume-size guard, so a full-resolution volume with ≤ 5000 folds now routes to an engine measured only at these sizes (the cost is per fold region, so it should scale; memory at full resolution is what the phase-4 chunked driver addresses).
+
+- **The head-to-head** (`benchmarks/output/windowed_3d/h2h.md`, records `h2h_<case>_<method>_l2.json`): twelve 3D artefacts × five methods, objective `l2`, threshold 0.01, one run each. *Certifies* = 0 fixed-6-tet folds AND 0 best-diagonal floor. The windowed engine certifies **12/12**, every one at `damage == 0` and `new_folds == 0`; `m10_3d` 9/12 (fails the two dense regions — `subvol16` at 17.6 % of cubes below threshold, `cluster` at 25 % — AND one 10 % cohort crop, `B0213`, at 1-3 residual folds); `pipeline3d` 6/12 (three of them — `B0213`, `B0304`, `cluster` — only by moving 100 % of the voxels); `barrier` **0/12**, and `barrier` is what `auto` picked on 11 of the 12 (every artefact but `twist`, whose −13.4 minimum put it in the depth-extreme tier where `auto` picked `m10_3d`, which certifies it); `m14_3d` 0/12. `barrier` and `m14_3d` also CREATE folds on every artefact (`new_folds` 7-225 and 3-100).
+
+  | case | method | auto's pick | folds in → out | floor out | new folds | damage | moved frac | wall s | L2 move | certifies |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | B0032_moderate | isqp_windowed | barrier | 1217 → 0 | 0 | 0 | 0 | 94.9 % | 1042 | 64.22 | ✓ |
+  | B0032_moderate | barrier | barrier | 1217 → 285 | 240 | 63 | — | 18.4 % | 28.07 | 28.21 | ✗ |
+  | B0032_moderate | m14_3d | barrier | 1217 → 150 | 123 | 28 | — | 60.6 % | 91.58 | 123.5 | ✗ |
+  | B0032_moderate | m10_3d | barrier | 1217 → 0 | 0 | 0 | — | 20.0 % | 194.5 | 42.37 | ✓ |
+  | B0032_moderate | pipeline3d | barrier | 1217 → 1 | 0 | 0 | — | 16.8 % | 290 | 42.49 | ✗ |
+  | B0049_moderate | isqp_windowed | barrier | 1217 → 0 | 0 | 0 | 0 | 89.2 % | 934.7 | 43.97 | ✓ |
+  | B0049_moderate | barrier | barrier | 1217 → 33 | 23 | 7 | — | 18.6 % | 28.29 | 28.64 | ✗ |
+  | B0049_moderate | m14_3d | barrier | 1217 → 153 | 106 | 43 | — | 54.7 % | 93.05 | 77.5 | ✗ |
+  | B0049_moderate | m10_3d | barrier | 1217 → 0 | 0 | 0 | — | 17.8 % | 170.5 | 27.54 | ✓ |
+  | B0049_moderate | pipeline3d | barrier | 1217 → 0 | 0 | 0 | — | 17.5 % | 226.7 | 29.44 | ✓ |
+  | B0053_moderate | isqp_windowed | barrier | 1217 → 0 | 0 | 0 | 0 | 82.9 % | 931 | 50.34 | ✓ |
+  | B0053_moderate | barrier | barrier | 1217 → 226 | 201 | 31 | — | 19.4 % | 28.62 | 29.39 | ✗ |
+  | B0053_moderate | m14_3d | barrier | 1217 → 78 | 51 | 11 | — | 52.2 % | 90.65 | 91.89 | ✗ |
+  | B0053_moderate | m10_3d | barrier | 1217 → 0 | 0 | 0 | — | 20.7 % | 177.5 | 45.37 | ✓ |
+  | B0053_moderate | pipeline3d | barrier | 1217 → 0 | 0 | 0 | — | 15.8 % | 458.7 | 48.11 | ✓ |
+  | B0200_moderate | isqp_windowed | barrier | 1216 → 0 | 0 | 0 | 0 | 89.3 % | 1901 | 55.85 | ✓ |
+  | B0200_moderate | barrier | barrier | 1216 → 198 | 167 | 26 | — | 20.9 % | 30.64 | 27.68 | ✗ |
+  | B0200_moderate | m14_3d | barrier | 1216 → 148 | 99 | 39 | — | 54.3 % | 88 | 172.6 | ✗ |
+  | B0200_moderate | m10_3d | barrier | 1216 → 0 | 0 | 0 | — | 22.2 % | 169.1 | 42.32 | ✓ |
+  | B0200_moderate | pipeline3d | barrier | 1216 → 0 | 0 | 0 | — | 60.4 % | 238.4 | 41.48 | ✓ |
+  | B0213_moderate | isqp_windowed | barrier | 1217 → 0 | 0 | 0 | 0 | 99.1 % | 1791 | 40.38 | ✓ |
+  | B0213_moderate | barrier | barrier | 1217 → 86 | 73 | 14 | — | 18.2 % | 27.63 | 26.52 | ✗ |
+  | B0213_moderate | m14_3d | barrier | 1217 → 249 | 154 | 47 | — | 53.1 % | 86.88 | 101.6 | ✗ |
+  | B0213_moderate | m10_3d | barrier | 1217 → 3 | 3 | 0 | — | 19.0 % | 167 | 35.78 | ✗ |
+  | B0213_moderate | pipeline3d | barrier | 1217 → 0 | 0 | 0 | — | 100 % | 633.9 | 60.55 | ✓ |
+  | B0304_moderate | isqp_windowed | barrier | 1217 → 0 | 0 | 0 | 0 | 65.9 % | 704 | 60.85 | ✓ |
+  | B0304_moderate | barrier | barrier | 1217 → 86 | 72 | 7 | — | 17.2 % | 31.25 | 21.31 | ✗ |
+  | B0304_moderate | m14_3d | barrier | 1217 → 204 | 154 | 48 | — | 38.2 % | 104.1 | 153.9 | ✗ |
+  | B0304_moderate | m10_3d | barrier | 1217 → 0 | 0 | 0 | — | 17.9 % | 219.1 | 29.7 | ✓ |
+  | B0304_moderate | pipeline3d | barrier | 1217 → 0 | 0 | 0 | — | 100 % | 200.7 | 104.8 | ✓ |
+  | cluster | isqp_windowed | barrier | 3038 → 0 | 0 | 0 | 0 | — | 5950-8250 | 90.4 | ✓ |
+  | cluster | barrier | barrier | 3038 → 1316 | 1076 | 225 | — | 40.7 % | 31.75 | 36.73 | ✗ |
+  | cluster | m14_3d | barrier | 3038 → 436 | 304 | 100 | — | 81.9 % | 96.99 | 176.8 | ✗ |
+  | cluster | m10_3d | barrier | 3038 → 1 | 1 | 0 | — | 46.2 % | 170.2 | 77.76 | ✗ |
+  | cluster | pipeline3d | barrier | 3038 → 0 | 0 | 0 | — | 100 % | 1286 | 120.2 | ✓ |
+  | moderate | isqp_windowed | barrier | 1217 → 0 | 0 | 0 | 0 | 96.5 % | 1020 | 58.73 | ✓ |
+  | moderate | barrier | barrier | 1217 → 440 | 372 | 107 | — | 21.9 % | 31.5 | 28.46 | ✗ |
+  | moderate | m14_3d | barrier | 1217 → 181 | 144 | 37 | — | 65.4 % | 92.72 | 129.5 | ✗ |
+  | moderate | m10_3d | barrier | 1217 → 0 | 0 | 0 | — | 26.1 % | 186.9 | 59.46 | ✓ |
+  | moderate | pipeline3d | barrier | 1217 → 2 | 2 | 0 | — | 22.2 % | 652.5 | 59.13 | ✗ |
+  | sliver | isqp_windowed | barrier | 1094 → 0 | 0 | 0 | 0 | 91.3 % | 703.5 | 23.28 | ✓ |
+  | sliver | barrier | barrier | 1094 → 29 | 17 | 9 | — | 13.9 % | 27.02 | 15.13 | ✗ |
+  | sliver | m14_3d | barrier | 1094 → 24 | 18 | 3 | — | 22.5 % | 99.33 | 34.9 | ✗ |
+  | sliver | m10_3d | barrier | 1094 → 0 | 0 | 0 | — | 13.5 % | 188.6 | 14.83 | ✓ |
+  | sliver | pipeline3d | barrier | 1094 → 12 | 12 | 0 | — | 10.4 % | 282.6 | 16.27 | ✗ |
+  | sub20 | isqp_windowed | barrier | 686 → 0 | 0 | 0 | 0 | 45.4 % | 611.1 | 19.12 | ✓ |
+  | sub20 | barrier | barrier | 686 → 20 | 14 | 7 | — | 17.8 % | 18.57 | 19.42 | ✗ |
+  | sub20 | m14_3d | barrier | 686 → 88 | 80 | 22 | — | 43.9 % | 62.55 | 62.75 | ✗ |
+  | sub20 | m10_3d | barrier | 686 → 0 | 0 | 0 | — | 18.2 % | 126 | 20.88 | ✓ |
+  | sub20 | pipeline3d | barrier | 686 → 5 | 4 | 0 | — | 14.7 % | 187.5 | 20.33 | ✗ |
+  | subvol16 | isqp_windowed | barrier | 721 → 0 | 0 | 0 | 0 | 76.5 % | 660.7 | 55.81 | ✓ |
+  | subvol16 | barrier | barrier | 721 → 210 | 171 | 37 | — | 25.8 % | 13.05 | 23.7 | ✗ |
+  | subvol16 | m14_3d | barrier | 721 → 257 | 201 | 61 | — | 51.1 % | 35.4 | 179.5 | ✗ |
+  | subvol16 | m10_3d | barrier | 721 → 3 | 3 | 0 | — | 26.4 % | 68.89 | 44.67 | ✗ |
+  | subvol16 | pipeline3d | barrier | 721 → 2 | 1 | 1 | — | 49.6 % | 897.7 | 49.9 | ✗ |
+  | twist | isqp_windowed | m10_3d | 403 → 0 | 0 | 0 | 0 | 80.1 % | 719 | 27.03 | ✓ |
+  | twist | barrier | m10_3d | 403 → 124 | 101 | 27 | — | 7.8 % | 31.51 | 15.09 | ✗ |
+  | twist | m14_3d | m10_3d | 403 → 122 | 86 | 20 | — | 35.2 % | 87.38 | 54.04 | ✗ |
+  | twist | m10_3d | m10_3d | 403 → 0 | 0 | 0 | — | 9.1 % | 170 | 25.97 | ✓ |
+  | twist | pipeline3d | m10_3d | 403 → 28 | 18 | 16 | — | 13.5 % | 626.6 | 30.17 | ✗ |
+
+  `damage` (folds created OUTSIDE the engine's touched set, 0 by construction) is only defined for the windowed rows; `new_folds` (fold-free in, folded out) is the cross-method analogue and is carried for all. The `cluster` / `isqp_windowed` row is the phase-3 crop-pack record (2 rounds, 94 windows, 2818 SQP iterations, L2 90.4, wall 5950-8250 s across the phase-2/phase-3 runs) because that h2h run is the chain's last step and had not landed when this was written; every other row is the driver's. **Wall:** the windowed engine costs 3.2-11x `m10_3d` — per case twist 4.2, sliver 3.7, moderate 5.5, sub20 4.8, subvol16 9.6, B0032 5.4, B0049 5.5, B0053 5.2, B0200 11.2, B0213 10.7, B0304 3.2, and 35-48x on `cluster` — and 23-65x `barrier` (187x on `cluster`), which never certifies. Walls are single-run on a shared box (the phase-3 contention caveat applies); the driver's `sqp_iters` column is omitted because it double-counts (below). **Move:** where `m10_3d` certifies, it is usually CLOSER to the input than the windowed engine — L2 ratios windowed / `m10_3d`: twist 1.04, sub20 0.91, moderate 0.99, sliver 1.57, B0032 1.51, B0049 1.60, B0053 1.11, B0200 1.32, B0304 2.05 — because the artefacts are small enough that the windowed engine's tiles cover 66-99 % of the voxels on the 24³ cuts (`moved_frac`; 45 % on the 20³ `sub20`, 76 % on the 17³ `subvol16`) where `m10_3d` moves 9-26 %. The pre-registered win criterion compared the windowed engine to `auto`'s CURRENT pick — `barrier`, which never certifies; on the single artefact where the current pick certifies (`twist`, `m10_3d`) the windowed L2 is +4 %, inside the 10 % bound — so the rule passes as pre-registered. The honest summary: **the windowed engine is the only certificate; `m10_3d` is the fast, usually-closer alternative that fails one artefact in four.**
+
+- **The artefacts and the driver.** The B0039 pack (`twist`, `sliver`, `moderate`, `cluster`, all 24³, plus the 20³ `sub20`), the 17³ `subvol16`, and one 24³ cut of each of six cohort brains' exterior Laplacian field: `python benchmarks/windowed_3d_vs_auto.py --cut <brain>` scans stride 12 for the 24³ box whose share of cubes below threshold lands in 0.08-0.15 and is closest to 10 %, and writes `data/dvfs/crops_3d/<brain>_moderate.npy` — all six landed at exactly 10.0 %, at (z, y, x) offsets B0032 (360, 216, 144), B0049 (72, 96, 216), B0053 (96, 60, 240), B0200 (12, 108, 228), B0213 (48, 240, 204), B0304 (348, 120, 408). One run per call (`--case <case> --method <method>`, `--objective` default `l2`), a JSON record each, `--table` rebuilds `h2h.md`; `auto_pick` in every record is what `auto_strategy` resolves for that artefact today, so the table shows the previous default beside every method.
+
+- **The explicit alternatives stay reachable by label.** `strategy='m10_3d'` is the fast route that certifies roughly 3 in 4 (above), and `strategy='pipeline3d'` / `correct_dvf_3d` is the packaged pipeline; neither is reachable from `auto` below 5000 folds any more. **Recommended follow-up, not built here:** a composite `m10_3d` → windowed residual repair — `m10_3d`'s failures are 1-3 residual folds, i.e. a few small windows, so the composite should certify at roughly `m10_3d`'s wall and move.
+
+- **GUI.** The simplex-3D method menu gains `I-SQP windowed 3D (no-damage cluster windows; needs osqp)` as its first row and the family's pinned default (`DEFAULT_METHOD_BY_CONSTRAINT[CONSTRAINT_TET3D]`), with the windowed knobs under Params → Strategy (`'isqp_windowed@tet3d'`). Without `osqp` that row is disabled and the default falls back to `m14` (`DEFAULT_METHOD_FALLBACK`), so Run never lands on a dead selection.
+
+- **Process.** The head-to-head ran from a detached snapshot worktree pinned at the benchmark commit while the branch moved on, so no library edit could perturb a run mid-chain. Deferred driver defect: `sqp_iters` is taken from `SolveInfo.total_iter`, which double-counts the round-loop entries (`sliver` 1398 = 2 × 699; `twist` 916 against the phase-3 record's 468) — the fix is to read the last round entry's `n_iter`; until then the docs take iterations from the phase-3 records and the column is omitted above.
+
 ### Added — 3D windowed engine, phase 3: `DEFAULTS_BY_DIM` (the per-dimension defaults table), the 3D cap, the QP settings; the cubic line model measured and refuted
 
 - The defaults table. `DEFAULTS_BY_DIM` (`dvfopt/core/windowed/_common.py`) maps knob → {dim: default} and is resolved once at the engine entry by `resolve_dim_defaults(dim, **knobs)`: a knob a caller leaves at its 2D default takes the column for the field's dimension, any other explicit value is honoured in every dimension (`giant_tile=12` works on a 3D field; `mop_margin=0` still disables the mop). The sharp edge is that the rule is value equality, so a value that IS the 2D default cannot be requested on 3D — `giant_tile=64` on a 3D field reads as "the 3D default" (pass 65 for a 64-voxel tile), or pass `dim_defaults=False`, the escape that takes every knob literally with no per-dimension resolution (`windowed_correct(..., dim_defaults=False)`, the field `dim_defaults` on `ISQPWindowedStrategy` / `WindowedWrapperStrategy`, and `--set dim_defaults=False` in `benchmarks/windowed_3d_sweep.py`). The phase-2 twin knobs `giant_tile_3d` / `mop_margin_3d` are **gone** (unreleased, no alias): pass `giant_tile=` / `mop_margin=`, which now mean what they say on a 3D field.
