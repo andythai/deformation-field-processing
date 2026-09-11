@@ -44,7 +44,7 @@ follows [Semantic Versioning](https://semver.org/).
   | B0304_moderate | m14_3d | barrier | 1217 → 204 | 154 | 48 | — | 38.2 % | 104.1 | 153.9 | ✗ |
   | B0304_moderate | m10_3d | barrier | 1217 → 0 | 0 | 0 | — | 17.9 % | 219.1 | 29.7 | ✓ |
   | B0304_moderate | pipeline3d | barrier | 1217 → 0 | 0 | 0 | — | 100 % | 200.7 | 104.8 | ✓ |
-  | cluster | isqp_windowed | barrier | 3038 → 0 | 0 | 0 | 0 | — | 5950-8250 | 90.4 | ✓ |
+  | cluster | isqp_windowed | barrier | 3038 → 0 | 0 | 0 | 0 | 1.00 | 6449 | 90.4 | ✓ |
   | cluster | barrier | barrier | 3038 → 1316 | 1076 | 225 | — | 40.7 % | 31.75 | 36.73 | ✗ |
   | cluster | m14_3d | barrier | 3038 → 436 | 304 | 100 | — | 81.9 % | 96.99 | 176.8 | ✗ |
   | cluster | m10_3d | barrier | 3038 → 1 | 1 | 0 | — | 46.2 % | 170.2 | 77.76 | ✗ |
