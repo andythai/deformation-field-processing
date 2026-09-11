@@ -220,8 +220,6 @@ def test_correct_solver_pipeline_routes_a_3d_volume(tmp_path):
     """``--pipeline solver`` on a (3, D, H, W) volume with ``--constraint simplex_3d`` is the
     whole-volume Solver route; ``auto`` picks the 3D default (the windowed engine at
     <= 5000 folds when osqp is installed, else barrier)."""
-    import json
-
     from dvfopt.core.primitives import isqp as isqp_mod
     from tests.conftest import planted_fold_3d
 
