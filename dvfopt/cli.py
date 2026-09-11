@@ -446,7 +446,8 @@ def build_parser() -> argparse.ArgumentParser:
         "simplex* + 'l1' -> slp; simplex* + 'l2' -> density-tiered "
         '(slsqp/barrier/m10); jdet and finite -> barrier when dense, isqp_windowed '
         'when mild. The isqp_windowed routes need osqp installed and fall back to '
-        'the tier heuristic without it; 3D routing is unchanged. The measured robust '
+        'the tier heuristic without it; 3D (simplex_3d) -> isqp_windowed at <= 5000 '
+        'folds (osqp), else the wallbreakers. The measured robust '
         "0-fold 2D recipe is --constraint bilinear --strategy isqp_windowed "
         '--objective none (docs/recipe-2d-zero-folds.md)',
     )
