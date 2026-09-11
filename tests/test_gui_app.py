@@ -1389,6 +1389,10 @@ def test_tet3d_default_falls_back_to_m14_without_osqp(qapp, monkeypatch):
 
     monkeypatch.setattr(app_mod, '_osqp_available', lambda: False)
     win = LiveSolverWindow()
+    # a fresh window carries the 2D pick (persisted settings or the 2D default 'slp', also a
+    # valid 3D method), which the combo preserves by design — clear it so the resolution
+    # goes through the pinned default and its disabled-row fallback
+    win._method_combo.clear()
     win._repopulate_method_combo(CONSTRAINT_TET3D)
     assert win._method_combo.currentData() == 'm14'
     assert (
