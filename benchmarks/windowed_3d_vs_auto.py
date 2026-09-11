@@ -59,9 +59,9 @@ def cut(brain, L=24, stride=12, lo=0.08, hi=0.15):
     vol = load_cohort_field(brain)
     _, D, H, W = vol.shape
     best = None
-    for z0 in range(0, D - L, stride):
-        for y0 in range(0, H - L, stride):
-            for x0 in range(0, W - L, stride):
+    for z0 in range(0, D - L + 1, stride):
+        for y0 in range(0, H - L + 1, stride):
+            for x0 in range(0, W - L + 1, stride):
                 phi = np.asarray(vol[:, z0 : z0 + L, y0 : y0 + L, x0 : x0 + L], dtype=np.float64)
                 frac = float((six_tet_min_volume_3d(phi) < THR).mean())
                 if lo <= frac <= hi and (best is None or abs(frac - 0.1) < abs(best[0] - 0.1)):
@@ -85,7 +85,7 @@ def run(case, method, objective="l2"):
     if method == "pipeline3d":
         from dvfopt.pipeline_3d import correct_dvf_3d
 
-        out, rep3 = correct_dvf_3d(phi.copy(), threshold=THR)
+        out, _ = correct_dvf_3d(phi.copy(), threshold=THR)
     else:
         res = correct_dvf(
             phi.copy(),
@@ -105,7 +105,14 @@ def run(case, method, objective="l2"):
         if method == "isqp_windowed":
             ex = res.info.extras  # the windowed strategy lifts the SliceReport's final stats here
             damage = int(ex.get("damage", -1))
-            rounds = int(ex.get("rounds", -1))
+            # "rounds" isn't one of the lifted extras keys (only damage,
+            # n_windows, giant_regions, mop_cleared, l1_move, l2_move are:
+            # dvfopt/core/windowed/_common.py ~1275-1291) -- count it from
+            # the round-loop phase names instead. Each round loop iteration
+            # appends a PhaseInfo named f"round{rep.rounds}" (_common.py
+            # ~1151); other stages are named "coarse"/"giant"/"reseed"/
+            # "mop"/"reanchor"/"final", so this can't overcount.
+            rounds = sum(1 for p in res.info.phases if p.name.startswith("round"))
             sqp_iters = int(res.info.total_iter)
     wall = time.perf_counter() - t
     mv1 = six_tet_min_volume_3d(out)
