@@ -405,6 +405,7 @@ _MID_TO_LABEL = {
     'slp_2tri': 'slp',
     'slp_tet3d': 'slp',
     'isqp_windowed_tet3d': 'isqp_windowed',
+    'm10_windowed_3d_tet3d': 'm10_windowed_3d',
     'm10_tet3d': 'm10_3d',
     'm14_tet3d': 'm14_3d',
     'm14_schwarz_tet3d': 'm14_schwarz_3d',

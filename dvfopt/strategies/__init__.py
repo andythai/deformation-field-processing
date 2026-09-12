@@ -28,6 +28,7 @@ The strategy hierarchy:
     ├── SchwarzStrategy                                  overlapping-tile SLSQP/Schwarz
     ├── SchwarzWrapperStrategy                           cluster-Schwarz wrapper around any inner Strategy (2D + 3D)
     ├── WindowedWrapperStrategy / ISQPWindowedStrategy   no-damage cluster-windowed engine (inner by label; isqp pinned)
+    ├── HarmonicALMBarrierWindowed3DStrategy             (m10_windowed_3d) m10_3d then the windowed engine on its residual
     ├── HarmonicALMBarrierStrategy                       (m10) harmonic -> PHR-ALM -> log-barrier polish
     ├── HarmonicALMRefineRepairStrategy                  (m14) m10 seed -> soft-penalty L2 refine -> harmonic repair -> log-barrier polish
     └── SchwarzHarmonicALMRefineRepairStrategy           (m14-schwarz) cluster-localized m14 + global polish (= SchwarzWrapperStrategy(inner=HarmonicALMRefineRepairStrategy()))
@@ -59,6 +60,10 @@ from dvfopt.strategies.base import (
     _build_solve_info,
     make_strategy,
     register_strategy,
+)
+from dvfopt.strategies.composite3d import (
+    HarmonicALMBarrierWindowed3DStrategy,
+    M10WindowedTetStrategy,
 )
 from dvfopt.strategies.nmvf import NMVFStrategy
 from dvfopt.strategies.schwarz import SchwarzStrategy
@@ -102,11 +107,13 @@ __all__ = [
     'Harmonic3DStrategy',
     'HarmonicALMBarrier3DStrategy',
     'HarmonicALMBarrierStrategy',
+    'HarmonicALMBarrierWindowed3DStrategy',
     'HarmonicALMRefineRepair3DStrategy',
     'HarmonicALMRefineRepairStrategy',
     'ISQPWindowedStrategy',
     'M10Strategy',
     'M10TetStrategy',
+    'M10WindowedTetStrategy',
     'M14Schwarz3DStrategy',
     'M14SchwarzStrategy',
     'M14Strategy',

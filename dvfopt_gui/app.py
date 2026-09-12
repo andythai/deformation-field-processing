@@ -39,6 +39,7 @@ from dvfopt_gui._shared import (  # noqa: F401  (re-exported for back-compat)
     _METHOD_SPECS_JDET3D,
     _METHOD_SPECS_TET3D,
     _OBJECTIVE_SPECS,
+    _OSQP_GATED_ALGOS,
     _REPO_ROOT,
     CONSTRAINT_2TRI,
     CONSTRAINT_JDET,
@@ -970,10 +971,12 @@ class LiveSolverWindow(FileIOMixin, RenderMixin, RunActionsMixin, QtWidgets.QMai
         idx = self._method_combo.findData('barrier_torch')
         if idx >= 0 and not _torch_available():
             self._method_combo.model().item(idx).setEnabled(False)
-        # ISQP windowed needs osqp; same visible-but-disabled treatment.
-        idx = self._method_combo.findData('isqp_windowed')
-        if idx >= 0 and not _osqp_available():
-            self._method_combo.model().item(idx).setEnabled(False)
+        # The isqp-inner rows need osqp; same visible-but-disabled treatment.
+        if not _osqp_available():
+            for algo in _OSQP_GATED_ALGOS:
+                idx = self._method_combo.findData(algo)
+                if idx >= 0:
+                    self._method_combo.model().item(idx).setEnabled(False)
         # Keep the prior algo selected if the new constraint also supports
         # it (e.g. switching constraint while "barrier" is selected keeps
         # barrier); otherwise fall back to the per-constraint default.

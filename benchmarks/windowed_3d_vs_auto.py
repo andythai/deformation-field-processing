@@ -36,7 +36,7 @@ SUBVOL16 = os.path.join(
     "research", "strict_feasibility_3d", "runners", "output", "b0039_subvol_16_moderate.npy"
 )
 THR = 0.01
-METHODS = ("isqp_windowed", "barrier", "m14_3d", "m10_3d", "pipeline3d")
+METHODS = ("isqp_windowed", "m10_windowed_3d", "barrier", "m14_3d", "m10_3d", "pipeline3d")
 
 
 def cases():
@@ -82,6 +82,8 @@ def run(case, method, objective="l2"):
     pick = auto_strategy(c, n_neg_in, min_in, objective)
     t = time.perf_counter()
     damage = sqp_iters = rounds = -1
+    bulk_folds_after = -1
+    bulk_wall_s = -1.0
     if method == "pipeline3d":
         from dvfopt.pipeline_3d import correct_dvf_3d
 
@@ -99,21 +101,24 @@ def run(case, method, objective="l2"):
             # (dvfopt/strategies/windowed.py, dvfopt/strategies/base.py
             # _build_solve_info: an unrecorded run returns a bare, empty
             # SolveInfo). Other strategies are unaffected either way.
-            record_history=(method == "isqp_windowed"),
+            record_history=(method in ("isqp_windowed", "m10_windowed_3d")),
         )
         out = np.asarray(res.corrected, dtype=np.float64)
-        if method == "isqp_windowed":
-            ex = res.info.extras  # the windowed strategy lifts the SliceReport's final stats here
+        if method in ("isqp_windowed", "m10_windowed_3d"):
+            ex = res.info.extras
             damage = int(ex.get("damage", -1))
-            # "rounds" isn't one of the lifted extras keys (only damage,
-            # n_windows, giant_regions, mop_cleared, l1_move, l2_move are:
-            # dvfopt/core/windowed/_common.py ~1275-1291) -- count it from
-            # the round-loop phase names instead. Each round loop iteration
-            # appends a PhaseInfo named f"round{rep.rounds}" (_common.py
-            # ~1151); other stages are named "coarse"/"giant"/"reseed"/
-            # "mop"/"reanchor"/"final", so this can't overcount.
-            rounds = sum(1 for p in res.info.phases if p.name.startswith("round"))
-            sqp_iters = int(res.info.total_iter)
+            # a `giant` history entry is nested inside its `round` entry, so summing every
+            # phase counts the tiles twice (sliver 1398 = 2 x 699): skip the giant entries
+            sqp_iters = int(
+                sum(
+                    p.n_iter
+                    for p in res.info.phases
+                    if not p.name.split(":")[-1].startswith("giant")
+                )
+            )
+            rounds = sum(1 for p in res.info.phases if p.name.split(":")[-1].startswith("round"))
+            bulk_folds_after = int(ex.get("bulk_n_neg_after", -1))
+            bulk_wall_s = float(ex.get("bulk_wall_s", -1.0))
     wall = time.perf_counter() - t
     mv1 = six_tet_min_volume_3d(out)
     fold_out = mv1 < THR
@@ -137,6 +142,8 @@ def run(case, method, objective="l2"):
         new_folds=int((fold_out & ~fold_in).sum()),
         moved_frac=float((np.abs(move).max(axis=0) > 1e-9).mean()),
         damage=damage,
+        bulk_folds_after=bulk_folds_after,
+        bulk_wall_s=bulk_wall_s,
         sqp_iters=sqp_iters,
         rounds=rounds,
         wall_s=wall,
@@ -161,6 +168,8 @@ COLS = [
     "floor_out",
     "new_folds",
     "damage",
+    "bulk_folds_after",
+    "bulk_wall_s",
     "moved_frac",
     "sqp_iters",
     "wall_s",

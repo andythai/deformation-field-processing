@@ -214,3 +214,38 @@ def test_correct_certify_refuses_a_partial_gauge_recipe(tmp_path, capsys):
     cert = json.loads((tmp_path / 'certificate.json').read_text())
     if not cert['certified']:
         assert rc == 1
+
+
+def test_correct_solver_pipeline_routes_a_3d_volume(tmp_path):
+    """``--pipeline solver`` on a (3, D, H, W) volume with ``--constraint simplex_3d`` is the
+    whole-volume Solver route; ``auto`` picks the 3D default (the windowed engine at
+    <= 5000 folds when osqp is installed, else barrier)."""
+    from dvfopt.core.primitives import isqp as isqp_mod
+    from tests.conftest import planted_fold_3d
+
+    p, out, rep = tmp_path / 'in.npy', tmp_path / 'out.npy', tmp_path / 'rep'
+    np.save(p, planted_fold_3d(6, 10, 10, depth=1.4))
+    rc = main(
+        [
+            'correct',
+            str(p),
+            str(out),
+            '--pipeline',
+            'solver',
+            '--constraint',
+            'simplex_3d',
+            '--strategy',
+            'auto',
+            '--report-dir',
+            str(rep),
+        ]
+    )
+    assert rc == 0
+    assert np.load(out).shape == (3, 6, 10, 10)
+    summary = json.loads((rep / 'summary.json').read_text())
+    # strategy_resolved carries the strategy CLASS name (SolveInfo.strategy_name), not the
+    # registry label, so pin the class auto_strategy resolves to at this fold count (74).
+    expected = 'ISQPWindowedStrategy' if isqp_mod.HAS_OSQP else 'BarrierStrategy'
+    assert (
+        summary['strategy_resolved'] == expected
+    )  # the resolved strategy is recorded in the summary

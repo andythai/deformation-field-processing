@@ -119,6 +119,12 @@ def run(case, cfg, tag, settings):
     overlap = kw.pop("reanchor_overlap", None)
     if overlap is not None:
         _cm._REANCHOR_OVERLAP = int(overlap)
+    # these three are also passed explicitly below (the cfg / THR set their defaults), so a
+    # `--set` touching any of them collides with a duplicate-keyword TypeError unless popped
+    # here first -- this is what lets e.g. `--set orientation_delta=None` override the default.
+    od = kw.pop("orientation_delta", od)
+    rows = kw.pop("orientation_rows", "edges")
+    thr = kw.pop("threshold", THR)
     EXITS.clear()
     QP_LOG.clear()
     TRACES.clear()
@@ -128,9 +134,9 @@ def run(case, cfg, tag, settings):
         "isqp",
         constraint=c,
         objective=obj_cls(),
-        threshold=THR,
+        threshold=thr,
         orientation_delta=od,
-        orientation_rows="edges",
+        orientation_rows=rows,
         verbose=0,
         **kw,
     )
